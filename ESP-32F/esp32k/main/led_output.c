@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "system_status.h"
 
 #define LED_R_GPIO GPIO_NUM_27
 #define LED_G_GPIO GPIO_NUM_33
@@ -77,6 +78,7 @@ static void led_output_task(void *arg)
     while (1) {
         if (led_output_drain_command(&command)) {
             s_current_command = command;
+            system_status_set_led_mode(command.mode);
             active_mode = command.mode;
             brightness = BREATH_MIN_BRIGHTNESS;
             breath_step = 1;
@@ -174,6 +176,7 @@ esp_err_t led_output_init(const led_command_t *default_command)
     }
 
     s_current_command = *default_command;
+    system_status_set_led_mode(default_command->mode);
     led_output_apply_scaled(default_command, 255);
     BaseType_t task_result = xTaskCreate(led_output_task, "led_output", 4096, NULL, 5, NULL);
     ESP_RETURN_ON_FALSE(task_result == pdPASS, ESP_ERR_NO_MEM, TAG, "failed to create LED task");

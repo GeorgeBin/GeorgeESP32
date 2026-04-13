@@ -1,9 +1,11 @@
 #include "esp_check.h"
 #include "esp_log.h"
 
+#include "display_service.h"
 #include "http_server_app.h"
 #include "led_output.h"
 #include "message_center.h"
+#include "system_status.h"
 #include "wifi_service.h"
 
 static const char *TAG = "esp32k_main";
@@ -18,8 +20,10 @@ void app_main(void)
     };
 
     ESP_ERROR_CHECK(message_center_init(1));
+    ESP_ERROR_CHECK(system_status_init());
     ESP_ERROR_CHECK(led_output_init(&default_command));
     ESP_ERROR_CHECK(message_center_submit(&default_command));
+    ESP_ERROR_CHECK(display_service_init());
     ESP_ERROR_CHECK(wifi_service_init_sta());
 
     if (!wifi_service_wait_connected(15000)) {

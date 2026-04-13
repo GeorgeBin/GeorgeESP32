@@ -843,6 +843,17 @@ CONFIG_ESP_ERR_TO_NAME_LOOKUP=y
 # end of ESP-Driver:LEDC Configurations
 
 #
+# ESP-Driver:SPI Configurations
+#
+# default:
+CONFIG_SPI_MASTER_ISR_IN_IRAM=y
+# default:
+# CONFIG_SPI_SLAVE_IN_IRAM is not set
+# default:
+CONFIG_SPI_SLAVE_ISR_IN_IRAM=y
+# end of ESP-Driver:SPI Configurations
+
+#
 # ESP-Driver:UART Configurations
 #
 # default:
@@ -1062,6 +1073,8 @@ CONFIG_ESP_BROWNOUT_USE_INTR=y
 # end of Brownout Detector
 # end of Power Supplier
 
+# default:
+CONFIG_ESP_SPI_BUS_LOCK_ISR_FUNCS_IN_IRAM=y
 # default:
 CONFIG_ESP_INTR_IN_IRAM=y
 # end of Hardware Settings

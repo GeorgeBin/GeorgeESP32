@@ -1,5 +1,6 @@
 #include "wifi_service.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -10,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "nvs_flash.h"
+#include "system_status.h"
 
 #define WIFI_SSID "X-Ray"
 #define WIFI_PASSWORD "110911091109"
@@ -36,6 +38,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        system_status_set_wifi(WIFI_SSID, NULL, false);
         if (s_retry_num < WIFI_MAXIMUM_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
@@ -45,7 +48,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        char ip_text[16];
         s_retry_num = 0;
+        snprintf(ip_text, sizeof(ip_text), IPSTR, IP2STR(&event->ip_info.ip));
+        system_status_set_wifi(WIFI_SSID, ip_text, true);
         ESP_LOGI(TAG, "Connected with IP: " IPSTR, IP2STR(&event->ip_info.ip));
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
@@ -106,6 +112,7 @@ esp_err_t wifi_service_init_sta(void)
     wifi_config.sta.pmf_cfg.required = false;
 
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    system_status_set_wifi(WIFI_SSID, NULL, false);
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config), TAG, "set config failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start failed");
