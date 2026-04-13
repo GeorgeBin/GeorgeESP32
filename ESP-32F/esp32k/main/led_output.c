@@ -17,6 +17,9 @@
 
 #define LEDC_TIMER_RESOLUTION LEDC_TIMER_13_BIT
 #define LEDC_MAX_DUTY ((1 << 13) - 1)
+#define BREATH_MIN_BRIGHTNESS 16
+#define BREATH_MAX_BRIGHTNESS 255
+#define BREATH_STEP_SIZE 5
 
 static const char *TAG = "led_output";
 
@@ -63,7 +66,8 @@ static void led_output_task(void *arg)
     (void) arg;
 
     led_command_t command = s_current_command;
-    int brightness = 0;
+    led_mode_t active_mode = command.mode;
+    int brightness = BREATH_MIN_BRIGHTNESS;
     int8_t breath_step = 1;
     bool blink_on = true;
     TickType_t last_wake = xTaskGetTickCount();
@@ -73,36 +77,48 @@ static void led_output_task(void *arg)
     while (1) {
         if (led_output_drain_command(&command)) {
             s_current_command = command;
-            brightness = 0;
+            active_mode = command.mode;
+            brightness = BREATH_MIN_BRIGHTNESS;
             breath_step = 1;
             blink_on = true;
+            last_wake = xTaskGetTickCount();
             ESP_LOGI(TAG, "Applying new command: rgb=(%u,%u,%u) mode=%d",
                      command.color_r, command.color_g, command.color_b, command.mode);
         }
 
         switch (command.mode) {
         case LED_MODE_SOLID:
+            active_mode = LED_MODE_SOLID;
             led_output_apply_scaled(&command, 255);
             vTaskDelay(pdMS_TO_TICKS(50));
             break;
         case LED_MODE_BREATH:
+            if (active_mode != LED_MODE_BREATH) {
+                active_mode = LED_MODE_BREATH;
+                brightness = BREATH_MIN_BRIGHTNESS;
+                breath_step = 1;
+                last_wake = xTaskGetTickCount();
+            }
+
             led_output_apply_scaled(&command, (uint8_t) brightness);
-            brightness += breath_step * 5;
-            if (brightness >= 250) {
-                brightness = 255;
+            brightness += breath_step * BREATH_STEP_SIZE;
+            if (brightness >= BREATH_MAX_BRIGHTNESS) {
+                brightness = BREATH_MAX_BRIGHTNESS;
                 breath_step = -1;
-            } else if (brightness <= 5) {
-                brightness = 0;
+            } else if (brightness <= BREATH_MIN_BRIGHTNESS) {
+                brightness = BREATH_MIN_BRIGHTNESS;
                 breath_step = 1;
             }
             vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(20));
             break;
         case LED_MODE_BLINK:
+            active_mode = LED_MODE_BLINK;
             led_output_apply_scaled(&command, blink_on ? 255 : 0);
             blink_on = !blink_on;
             vTaskDelay(pdMS_TO_TICKS(500));
             break;
         default:
+            active_mode = command.mode;
             led_output_apply_scaled(&command, 0);
             vTaskDelay(pdMS_TO_TICKS(100));
             break;
