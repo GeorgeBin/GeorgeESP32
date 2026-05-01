@@ -16,8 +16,8 @@
 #define LED_G_GPIO GPIO_NUM_33
 #define LED_B_GPIO GPIO_NUM_32
 
-#define LEDC_TIMER_RESOLUTION LEDC_TIMER_13_BIT
-#define LEDC_MAX_DUTY ((1 << 13) - 1)
+#define LEDC_TIMER_RESOLUTION LEDC_TIMER_10_BIT
+#define LEDC_MAX_DUTY ((1 << 10) - 1)
 #define BREATH_MIN_BRIGHTNESS 16
 #define BREATH_MAX_BRIGHTNESS 255
 #define BREATH_STEP_SIZE 5
@@ -136,7 +136,7 @@ esp_err_t led_output_init(const led_command_t *default_command)
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .timer_num = LEDC_TIMER_0,
         .duty_resolution = LEDC_TIMER_RESOLUTION,
-        .freq_hz = 5000,
+        .freq_hz = 25000,
         .clk_cfg = LEDC_AUTO_CLK,
     };
     ESP_RETURN_ON_ERROR(ledc_timer_config(&ledc_timer), TAG, "timer config failed");
