@@ -1,6 +1,7 @@
 #include "notification_rules.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,8 @@ typedef struct {
 static const char *TAG = "notification_rules";
 static notification_rule_t s_rules[NOTIFICATION_RULE_MAX_COUNT];
 static size_t s_rule_count;
+static uint32_t s_active_led_notification_uid;
+static bool s_has_active_led_notification;
 
 static const app_preset_t APP_PRESETS[] = {
     {"Wechat", "com.tencent.xin"},
@@ -300,6 +303,49 @@ esp_err_t notification_rules_apply_event(const ancs_notification_event_t *event)
 
     system_status_set_ancs_rule_result(true, rule.label);
     ESP_LOGI(TAG, "matched rule %s for app_id=%s", rule.label, event->app_id);
+    esp_err_t ret = message_center_submit(&command);
+    if (ret == ESP_OK) {
+        s_active_led_notification_uid = event->notification_uid;
+        s_has_active_led_notification = true;
+        ESP_LOGI(TAG, "active ANCS LED notification uid=%" PRIu32,
+                 s_active_led_notification_uid);
+    }
+    return ret;
+}
+
+esp_err_t notification_rules_handle_removed(uint32_t notification_uid)
+{
+    if (!s_has_active_led_notification || s_active_led_notification_uid != notification_uid) {
+        ESP_LOGI(TAG, "removed notification uid=%" PRIu32 " does not control current LED",
+                 notification_uid);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    system_status_snapshot_t snapshot = {0};
+    system_status_get_snapshot(&snapshot);
+    s_has_active_led_notification = false;
+    s_active_led_notification_uid = 0;
+
+    if (snapshot.last_source != CONTROL_SOURCE_ANCS) {
+        ESP_LOGI(TAG, "removed ANCS uid matched, but LED source is %s; not turning off",
+                 system_status_control_source_to_string(snapshot.last_source));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const led_command_t command = {
+        .color_r = 0,
+        .color_g = 0,
+        .color_b = 0,
+        .brightness = 0,
+        .mode = LED_MODE_OFF,
+        .period_ms = 0,
+        .on_ms = 0,
+        .off_ms = 0,
+        .source = CONTROL_SOURCE_ANCS,
+    };
+
+    ESP_LOGI(TAG, "removed active ANCS notification uid=%" PRIu32 "; turning LED off",
+             notification_uid);
     return message_center_submit(&command);
 }
 

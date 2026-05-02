@@ -41,6 +41,7 @@ esp_err_t notification_rules_set(const notification_rule_t *rules, size_t rule_c
 bool notification_rules_match_event(const ancs_notification_event_t *event,
                                     notification_rule_t *matched_rule);
 esp_err_t notification_rules_apply_event(const ancs_notification_event_t *event);
+esp_err_t notification_rules_handle_removed(uint32_t notification_uid);
 bool notification_rules_parse_color(const char *text, uint8_t *red, uint8_t *green, uint8_t *blue);
 bool notification_rules_parse_mode(const char *mode_str, led_mode_t *mode);
 const char *notification_rules_mode_to_string(led_mode_t mode);

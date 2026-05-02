@@ -526,6 +526,8 @@ static void handle_notification_source(const uint8_t *data, size_t len)
         s_next_pending_source_index =
             (s_next_pending_source_index + 1) % ANCS_PENDING_SOURCE_COUNT;
         request_notification_attributes(source_event.notification_uid);
+    } else if (source_event.action == ANCS_EVENT_REMOVED) {
+        notification_rules_handle_removed(source_event.notification_uid);
     }
 }
 
