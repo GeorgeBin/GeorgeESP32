@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ble_provisioning.h"
 #include "system_status.h"
 
 #define TFT_SPI_HOST SPI2_HOST
@@ -331,31 +332,47 @@ static esp_err_t display_render_status(const system_status_snapshot_t *snapshot)
     ESP_RETURN_ON_ERROR(display_draw_string(4, 0, "George LED", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw title failed");
 
-    snprintf(line, sizeof(line), "WiFi: %s", snapshot->wifi_connected ? "connected" : "disconnected");
+    snprintf(line, sizeof(line), "State: %s", system_status_device_state_to_string(snapshot->device_state));
     ESP_RETURN_ON_ERROR(display_draw_string(4, 16, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                        "draw state failed");
+
+    if (snapshot->device_state == DEVICE_STATE_WAIT_PROVISIONING ||
+        snapshot->device_state == DEVICE_STATE_PROVISIONING) {
+        ESP_RETURN_ON_ERROR(display_draw_string(4, 32, "Mode: provisioning", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                            "draw provisioning mode failed");
+        ESP_RETURN_ON_ERROR(display_draw_string(4, 48, "Name:", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                            "draw provisioning name label failed");
+        ESP_RETURN_ON_ERROR(display_draw_string(4, 64, BLE_PROVISIONING_DEVICE_NAME, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                            "draw provisioning name failed");
+        snprintf(line, sizeof(line), "PoP: %s", BLE_PROVISIONING_POP);
+        ESP_RETURN_ON_ERROR(display_draw_string(4, 80, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                            "draw provisioning pop failed");
+        ESP_RETURN_ON_ERROR(display_draw_string(4, 96, "Use BLE app", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                            "draw provisioning tip failed");
+        return ESP_OK;
+    }
+
+    snprintf(line, sizeof(line), "WiFi: %s", snapshot->wifi_connected ? "connected" : "disconnected");
+    ESP_RETURN_ON_ERROR(display_draw_string(4, 32, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw wifi failed");
 
     snprintf(line, sizeof(line), "BLE: %s", snapshot->ble_connected ? "connected" : "disconnected");
-    ESP_RETURN_ON_ERROR(display_draw_string(4, 32, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+    ESP_RETURN_ON_ERROR(display_draw_string(4, 48, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw ble failed");
 
     snprintf(line, sizeof(line), "Source: %s",
              system_status_control_source_to_string(snapshot->last_source));
-    ESP_RETURN_ON_ERROR(display_draw_string(4, 48, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+    ESP_RETURN_ON_ERROR(display_draw_string(4, 64, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw source failed");
 
     snprintf(line, sizeof(line), "Color: %02X%02X%02X", snapshot->led.color_r,
              snapshot->led.color_g, snapshot->led.color_b);
-    ESP_RETURN_ON_ERROR(display_draw_string(4, 64, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+    ESP_RETURN_ON_ERROR(display_draw_string(4, 80, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw color failed");
 
     snprintf(line, sizeof(line), "Mode: %s", system_status_led_mode_to_string(snapshot->led.mode));
-    ESP_RETURN_ON_ERROR(display_draw_string(4, 80, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw led failed");
-
-    snprintf(line, sizeof(line), "Bri: %u", snapshot->led.brightness);
     ESP_RETURN_ON_ERROR(display_draw_string(4, 96, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw brightness failed");
+                        "draw led failed");
 
     snprintf(line, sizeof(line), "Result: %s", snapshot->last_result_code == 0 ? "OK" : "Error");
     ESP_RETURN_ON_ERROR(display_draw_string(4, 112, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
@@ -368,6 +385,7 @@ static bool display_snapshot_equals(const system_status_snapshot_t *lhs,
                                     const system_status_snapshot_t *rhs)
 {
     return lhs->wifi_connected == rhs->wifi_connected &&
+           lhs->device_state == rhs->device_state &&
            lhs->ble_connected == rhs->ble_connected &&
            lhs->last_source == rhs->last_source &&
            lhs->last_result_code == rhs->last_result_code &&
@@ -376,6 +394,7 @@ static bool display_snapshot_equals(const system_status_snapshot_t *lhs,
            lhs->led.color_b == rhs->led.color_b &&
            lhs->led.brightness == rhs->led.brightness &&
            lhs->led.mode == rhs->led.mode &&
+           strcmp(lhs->wifi_ssid, rhs->wifi_ssid) == 0 &&
            strcmp(lhs->ip_address, rhs->ip_address) == 0 &&
            strcmp(lhs->last_result_msg, rhs->last_result_msg) == 0;
 }

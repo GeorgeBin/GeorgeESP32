@@ -7,6 +7,7 @@
 
 static SemaphoreHandle_t s_status_mutex;
 static system_status_snapshot_t s_status = {
+    .device_state = DEVICE_STATE_BOOTING,
     .wifi_connected = false,
     .ble_enabled = false,
     .ble_connected = false,
@@ -51,6 +52,18 @@ esp_err_t system_status_init(void)
 
     s_status_mutex = xSemaphoreCreateMutex();
     return s_status_mutex != NULL ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+void system_status_set_device_state(device_state_t state)
+{
+    if (s_status_mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
+        s_status.device_state = state;
+        xSemaphoreGive(s_status_mutex);
+    }
 }
 
 void system_status_set_wifi(const char *ssid, const char *ip_or_null, bool connected)
@@ -149,5 +162,29 @@ const char *system_status_control_source_to_string(control_source_t source)
     case CONTROL_SOURCE_NONE:
     default:
         return "none";
+    }
+}
+
+const char *system_status_device_state_to_string(device_state_t state)
+{
+    switch (state) {
+    case DEVICE_STATE_BOOTING:
+        return "booting";
+    case DEVICE_STATE_WAIT_PROVISIONING:
+        return "wait_provisioning";
+    case DEVICE_STATE_PROVISIONING:
+        return "provisioning";
+    case DEVICE_STATE_WIFI_CONNECTING:
+        return "wifi_connecting";
+    case DEVICE_STATE_WIFI_CONNECTED:
+        return "wifi_connected";
+    case DEVICE_STATE_WIFI_FAILED:
+        return "wifi_failed";
+    case DEVICE_STATE_NORMAL_RUNNING:
+        return "normal_running";
+    case DEVICE_STATE_RESETTING_WIFI:
+        return "resetting_wifi";
+    default:
+        return "unknown";
     }
 }

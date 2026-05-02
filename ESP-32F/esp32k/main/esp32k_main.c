@@ -2,12 +2,13 @@
 #include "esp_log.h"
 
 #include "ble_manager.h"
+#include "ble_provisioning.h"
 #include "display_service.h"
 #include "http_server_app.h"
 #include "led_output.h"
 #include "message_center.h"
 #include "system_status.h"
-#include "wifi_service.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "esp32k_main";
 
@@ -30,13 +31,22 @@ void app_main(void)
     ESP_ERROR_CHECK(led_output_init(&default_command));
     ESP_ERROR_CHECK(message_center_submit(&default_command));
     ESP_ERROR_CHECK(display_service_init());
-    ESP_ERROR_CHECK(ble_manager_start());
-    ESP_ERROR_CHECK(wifi_service_init_sta());
+    ESP_ERROR_CHECK(wifi_manager_init());
 
-    if (!wifi_service_wait_connected(15000)) {
-        ESP_LOGW(TAG, "Wi-Fi not connected, HTTP server will not start; BLE remains available");
+    if (!wifi_manager_is_provisioned()) {
+        ESP_LOGI(TAG, "Device is not provisioned; starting BLE Wi-Fi provisioning only");
+        system_status_set_device_state(DEVICE_STATE_WAIT_PROVISIONING);
+        ESP_ERROR_CHECK(ble_provisioning_start());
+        return;
+    }
+
+    ESP_ERROR_CHECK(wifi_manager_start_sta());
+    if (!wifi_manager_wait_connected(15000)) {
+        ESP_LOGW(TAG, "Wi-Fi not connected, HTTP server and BLE LED will not start");
     } else {
         ESP_ERROR_CHECK(http_server_app_start());
+        ESP_ERROR_CHECK(ble_manager_start());
+        system_status_set_device_state(DEVICE_STATE_NORMAL_RUNNING);
     }
 
     ESP_LOGI(TAG, "System ready");

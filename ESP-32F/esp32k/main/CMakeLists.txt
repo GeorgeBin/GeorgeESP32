@@ -6,10 +6,11 @@ idf_component_register(
         "led_output.c"
         "ble_manager.c"
         "ble_led_service.c"
-        "wifi_service.c"
+        "wifi_manager.c"
+        "ble_provisioning.c"
         "http_server_app.c"
         "display_service.c"
         PRIV_REQUIRES spi_flash
         INCLUDE_DIRS "."
-        REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_wifi esp_event esp_netif nvs_flash esp_http_server bt json
+        REQUIRES esp_driver_gpio esp_driver_ledc esp_driver_spi esp_wifi esp_event esp_netif nvs_flash esp_http_server bt json wifi_provisioning protocomm
 )

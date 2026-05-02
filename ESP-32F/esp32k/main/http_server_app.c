@@ -11,8 +11,12 @@
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "message_center.h"
 #include "system_status.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "http_server";
 
@@ -132,10 +136,11 @@ static void command_apply_defaults(led_command_t *command)
 static void append_state_json(char *response, size_t response_size, const system_status_snapshot_t *snapshot)
 {
     snprintf(response, response_size,
-             "{\"ble_connected\":%s,\"wifi_connected\":%s,"
+             "{\"device_state\":\"%s\",\"ble_connected\":%s,\"wifi_connected\":%s,"
              "\"led\":{\"color\":\"#%02X%02X%02X\",\"mode\":\"%s\",\"brightness\":%u,"
              "\"period_ms\":%" PRIu32 ",\"on_ms\":%" PRIu32 ",\"off_ms\":%" PRIu32 "},"
              "\"last_source\":\"%s\",\"last_result\":{\"code\":%d,\"msg\":\"%s\"}}",
+             system_status_device_state_to_string(snapshot->device_state),
              snapshot->ble_connected ? "true" : "false",
              snapshot->wifi_connected ? "true" : "false",
              snapshot->led.color_r, snapshot->led.color_g, snapshot->led.color_b,
@@ -252,6 +257,34 @@ static esp_err_t state_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 }
 
+static void wifi_reset_restart_task(void *arg)
+{
+    (void) arg;
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+}
+
+static esp_err_t wifi_reset_post_handler(httpd_req_t *req)
+{
+    char response[64];
+
+    if (wifi_manager_reset_config() != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", "failed to reset wifi");
+    }
+
+    system_status_set_last_result(0, "wifi reset");
+    httpd_resp_set_type(req, "application/json");
+    snprintf(response, sizeof(response), "{\"ok\":true,\"restarting\":true}");
+    esp_err_t ret = httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+
+    if (xTaskCreate(wifi_reset_restart_task, "wifi_reset_restart", 2048, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create Wi-Fi reset restart task");
+        esp_restart();
+    }
+
+    return ret;
+}
+
 esp_err_t http_server_app_start(void)
 {
     if (s_server != NULL) {
@@ -281,10 +314,18 @@ esp_err_t http_server_app_start(void)
         .handler = state_get_handler,
         .user_ctx = NULL,
     };
+    const httpd_uri_t wifi_reset_uri = {
+        .uri = "/api/wifi/reset",
+        .method = HTTP_POST,
+        .handler = wifi_reset_post_handler,
+        .user_ctx = NULL,
+    };
 
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &index_uri), TAG, "register / failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &led_uri), TAG, "register /api/led failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &state_uri), TAG, "register /api/state failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &wifi_reset_uri), TAG,
+                        "register /api/wifi/reset failed");
 
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;
