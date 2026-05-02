@@ -1,14 +1,18 @@
 #include "http_server_app.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "ble_led_service.h"
+#include "cJSON.h"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "message_center.h"
+#include "system_status.h"
 
 static const char *TAG = "http_server";
 
@@ -41,7 +45,7 @@ static const char *INDEX_HTML =
     "</select>"
     "<button id=\"submit\">发送命令</button>"
     "<div class=\"status\" id=\"status\">等待发送</div>"
-    "<div class=\"tips\">接口：POST /api/led，JSON 字段为 color 和 mode。</div>"
+    "<div class=\"tips\">接口：POST /api/led，JSON 字段为 color、mode 和 brightness。</div>"
     "</main><script>"
     "const statusEl=document.getElementById('status');"
     "document.getElementById('submit').addEventListener('click',async()=>{"
@@ -66,6 +70,10 @@ static esp_err_t send_json_error(httpd_req_t *req, const char *status, const cha
 
 static bool parse_led_mode(const char *mode_str, led_mode_t *mode)
 {
+    if (strcmp(mode_str, "off") == 0) {
+        *mode = LED_MODE_OFF;
+        return true;
+    }
     if (strcmp(mode_str, "solid") == 0) {
         *mode = LED_MODE_SOLID;
         return true;
@@ -112,52 +120,33 @@ static bool parse_hex_color(const char *text, uint8_t *red, uint8_t *green, uint
     return true;
 }
 
-static bool extract_json_string_value(const char *json, const char *key, char *out, size_t out_size)
+static void command_apply_defaults(led_command_t *command)
 {
-    char pattern[32];
-    const char *key_pos;
-    const char *colon_pos;
-    const char *value_start;
-    const char *value_end;
-    size_t value_len;
+    command->brightness = 100;
+    command->period_ms = 2000;
+    command->on_ms = 500;
+    command->off_ms = 500;
+    command->source = CONTROL_SOURCE_HTTP;
+}
 
-    if (snprintf(pattern, sizeof(pattern), "\"%s\"", key) <= 0) {
-        return false;
-    }
-
-    key_pos = strstr(json, pattern);
-    if (key_pos == NULL) {
-        return false;
-    }
-
-    colon_pos = strchr(key_pos + strlen(pattern), ':');
-    if (colon_pos == NULL) {
-        return false;
-    }
-
-    value_start = colon_pos + 1;
-    while (*value_start != '\0' && isspace((unsigned char) *value_start)) {
-        value_start++;
-    }
-
-    if (*value_start != '"') {
-        return false;
-    }
-
-    value_start++;
-    value_end = strchr(value_start, '"');
-    if (value_end == NULL) {
-        return false;
-    }
-
-    value_len = (size_t) (value_end - value_start);
-    if (value_len == 0 || value_len >= out_size) {
-        return false;
-    }
-
-    memcpy(out, value_start, value_len);
-    out[value_len] = '\0';
-    return true;
+static void append_state_json(char *response, size_t response_size, const system_status_snapshot_t *snapshot)
+{
+    snprintf(response, response_size,
+             "{\"ble_connected\":%s,\"wifi_connected\":%s,"
+             "\"led\":{\"color\":\"#%02X%02X%02X\",\"mode\":\"%s\",\"brightness\":%u,"
+             "\"period_ms\":%" PRIu32 ",\"on_ms\":%" PRIu32 ",\"off_ms\":%" PRIu32 "},"
+             "\"last_source\":\"%s\",\"last_result\":{\"code\":%d,\"msg\":\"%s\"}}",
+             snapshot->ble_connected ? "true" : "false",
+             snapshot->wifi_connected ? "true" : "false",
+             snapshot->led.color_r, snapshot->led.color_g, snapshot->led.color_b,
+             system_status_led_mode_to_string(snapshot->led.mode),
+             snapshot->led.brightness,
+             snapshot->led.period_ms,
+             snapshot->led.on_ms,
+             snapshot->led.off_ms,
+             system_status_control_source_to_string(snapshot->last_source),
+             snapshot->last_result_code,
+             snapshot->last_result_msg);
 }
 
 static esp_err_t index_get_handler(httpd_req_t *req)
@@ -168,9 +157,7 @@ static esp_err_t index_get_handler(httpd_req_t *req)
 
 static esp_err_t led_post_handler(httpd_req_t *req)
 {
-    char body[128];
-    char color_text[16];
-    char mode_text[16];
+    char body[256];
     int remaining = req->content_len;
     int offset = 0;
 
@@ -188,29 +175,80 @@ static esp_err_t led_post_handler(httpd_req_t *req)
     }
     body[offset] = '\0';
 
-    if (!extract_json_string_value(body, "color", color_text, sizeof(color_text)) ||
-        !extract_json_string_value(body, "mode", mode_text, sizeof(mode_text))) {
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
         return send_json_error(req, "400 Bad Request", "invalid json");
     }
 
     led_command_t command = {0};
-    if (!parse_hex_color(color_text, &command.color_r, &command.color_g, &command.color_b)) {
-        return send_json_error(req, "400 Bad Request", "invalid color format");
-    }
-    if (!parse_led_mode(mode_text, &command.mode)) {
+    command_apply_defaults(&command);
+
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    if (!cJSON_IsString(mode) || !parse_led_mode(mode->valuestring, &command.mode)) {
+        cJSON_Delete(root);
         return send_json_error(req, "400 Bad Request", "invalid mode");
     }
 
+    if (command.mode != LED_MODE_OFF) {
+        const cJSON *color = cJSON_GetObjectItemCaseSensitive(root, "color");
+        if (!cJSON_IsString(color) ||
+            !parse_hex_color(color->valuestring, &command.color_r, &command.color_g, &command.color_b)) {
+            cJSON_Delete(root);
+            return send_json_error(req, "400 Bad Request", "invalid color format");
+        }
+    }
+
+    const cJSON *brightness = cJSON_GetObjectItemCaseSensitive(root, "brightness");
+    if (brightness != NULL) {
+        if (!cJSON_IsNumber(brightness) || brightness->valueint < 0 || brightness->valueint > 100) {
+            cJSON_Delete(root);
+            return send_json_error(req, "400 Bad Request", "invalid brightness");
+        }
+        command.brightness = (uint8_t) brightness->valueint;
+    }
+
+    const cJSON *period_ms = cJSON_GetObjectItemCaseSensitive(root, "period_ms");
+    if (period_ms != NULL && cJSON_IsNumber(period_ms) && period_ms->valueint > 0) {
+        command.period_ms = (uint32_t) period_ms->valueint;
+    }
+    const cJSON *on_ms = cJSON_GetObjectItemCaseSensitive(root, "on_ms");
+    if (on_ms != NULL && cJSON_IsNumber(on_ms) && on_ms->valueint > 0) {
+        command.on_ms = (uint32_t) on_ms->valueint;
+    }
+    const cJSON *off_ms = cJSON_GetObjectItemCaseSensitive(root, "off_ms");
+    if (off_ms != NULL && cJSON_IsNumber(off_ms) && off_ms->valueint > 0) {
+        command.off_ms = (uint32_t) off_ms->valueint;
+    }
+
+    cJSON_Delete(root);
+
     if (message_center_submit(&command) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to queue LED command");
+        system_status_set_last_result(3001, "led queue failed");
         return send_json_error(req, "500 Internal Server Error", "failed to queue LED command");
     }
 
-    char response[96];
+    system_status_set_led_command(&command);
+    system_status_set_last_result(0, "ok");
+    ble_led_service_notify_state(0, 0, "ok");
+
+    char response[128];
     httpd_resp_set_type(req, "application/json");
     snprintf(response, sizeof(response),
-             "{\"ok\":true,\"color\":\"#%02X%02X%02X\",\"mode\":\"%s\"}",
-             command.color_r, command.color_g, command.color_b, mode_text);
+             "{\"ok\":true,\"color\":\"#%02X%02X%02X\",\"mode\":\"%s\",\"brightness\":%u}",
+             command.color_r, command.color_g, command.color_b,
+             system_status_led_mode_to_string(command.mode), command.brightness);
+    return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t state_get_handler(httpd_req_t *req)
+{
+    system_status_snapshot_t snapshot = {0};
+    char response[384];
+
+    system_status_get_snapshot(&snapshot);
+    append_state_json(response, sizeof(response), &snapshot);
+    httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -237,9 +275,16 @@ esp_err_t http_server_app_start(void)
         .handler = led_post_handler,
         .user_ctx = NULL,
     };
+    const httpd_uri_t state_uri = {
+        .uri = "/api/state",
+        .method = HTTP_GET,
+        .handler = state_get_handler,
+        .user_ctx = NULL,
+    };
 
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &index_uri), TAG, "register / failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &led_uri), TAG, "register /api/led failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &state_uri), TAG, "register /api/state failed");
 
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;
