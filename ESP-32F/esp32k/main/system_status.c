@@ -11,8 +11,15 @@ static system_status_snapshot_t s_status = {
     .wifi_connected = false,
     .ble_enabled = false,
     .ble_connected = false,
+    .ancs_connected = false,
     .wifi_ssid = "",
     .ip_address = "waiting...",
+    .ancs_notification = {
+        .app_id = "",
+        .title = "",
+        .subtitle = "",
+        .message = "",
+    },
     .led = {
         .color_r = 255,
         .color_g = 255,
@@ -94,6 +101,30 @@ void system_status_set_ble(bool enabled, bool connected)
     if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
         s_status.ble_enabled = enabled;
         s_status.ble_connected = connected;
+        xSemaphoreGive(s_status_mutex);
+    }
+}
+
+void system_status_set_ancs_connected(bool connected)
+{
+    if (s_status_mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
+        s_status.ancs_connected = connected;
+        xSemaphoreGive(s_status_mutex);
+    }
+}
+
+void system_status_set_ancs_notification(const ancs_notification_event_t *event)
+{
+    if (s_status_mutex == NULL || event == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
+        s_status.ancs_notification = *event;
         xSemaphoreGive(s_status_mutex);
     }
 }

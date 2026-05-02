@@ -6,17 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ble_led_service.h"
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
-#include "esp_system.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 #include "message_center.h"
 #include "system_status.h"
-#include "wifi_manager.h"
 
 static const char *TAG = "http_server";
 
@@ -135,23 +130,58 @@ static void command_apply_defaults(led_command_t *command)
 
 static void append_state_json(char *response, size_t response_size, const system_status_snapshot_t *snapshot)
 {
-    snprintf(response, response_size,
-             "{\"device_state\":\"%s\",\"ble_connected\":%s,\"wifi_connected\":%s,"
-             "\"led\":{\"color\":\"#%02X%02X%02X\",\"mode\":\"%s\",\"brightness\":%u,"
-             "\"period_ms\":%" PRIu32 ",\"on_ms\":%" PRIu32 ",\"off_ms\":%" PRIu32 "},"
-             "\"last_source\":\"%s\",\"last_result\":{\"code\":%d,\"msg\":\"%s\"}}",
-             system_status_device_state_to_string(snapshot->device_state),
-             snapshot->ble_connected ? "true" : "false",
-             snapshot->wifi_connected ? "true" : "false",
-             snapshot->led.color_r, snapshot->led.color_g, snapshot->led.color_b,
-             system_status_led_mode_to_string(snapshot->led.mode),
-             snapshot->led.brightness,
-             snapshot->led.period_ms,
-             snapshot->led.on_ms,
-             snapshot->led.off_ms,
-             system_status_control_source_to_string(snapshot->last_source),
-             snapshot->last_result_code,
-             snapshot->last_result_msg);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *led = cJSON_CreateObject();
+    cJSON *ancs = cJSON_CreateObject();
+    cJSON *last_result = cJSON_CreateObject();
+    char color[8];
+
+    if (root == NULL || led == NULL || ancs == NULL || last_result == NULL) {
+        snprintf(response, response_size, "{}");
+        cJSON_Delete(root);
+        cJSON_Delete(led);
+        cJSON_Delete(ancs);
+        cJSON_Delete(last_result);
+        return;
+    }
+
+    snprintf(color, sizeof(color), "#%02X%02X%02X",
+             snapshot->led.color_r, snapshot->led.color_g, snapshot->led.color_b);
+
+    cJSON_AddStringToObject(root, "device_state",
+                            system_status_device_state_to_string(snapshot->device_state));
+    cJSON_AddBoolToObject(root, "ble_connected", snapshot->ble_connected);
+    cJSON_AddBoolToObject(root, "ancs_connected", snapshot->ancs_connected);
+    cJSON_AddBoolToObject(root, "wifi_connected", snapshot->wifi_connected);
+    cJSON_AddStringToObject(root, "ip_address", snapshot->ip_address);
+
+    cJSON_AddStringToObject(led, "color", color);
+    cJSON_AddStringToObject(led, "mode", system_status_led_mode_to_string(snapshot->led.mode));
+    cJSON_AddNumberToObject(led, "brightness", snapshot->led.brightness);
+    cJSON_AddNumberToObject(led, "period_ms", snapshot->led.period_ms);
+    cJSON_AddNumberToObject(led, "on_ms", snapshot->led.on_ms);
+    cJSON_AddNumberToObject(led, "off_ms", snapshot->led.off_ms);
+    cJSON_AddItemToObject(root, "led", led);
+
+    cJSON_AddNumberToObject(ancs, "uid", snapshot->ancs_notification.notification_uid);
+    cJSON_AddStringToObject(ancs, "action",
+                            ancs_event_action_to_string(snapshot->ancs_notification.action));
+    cJSON_AddStringToObject(ancs, "app_id", snapshot->ancs_notification.app_id);
+    cJSON_AddStringToObject(ancs, "title", snapshot->ancs_notification.title);
+    cJSON_AddStringToObject(ancs, "subtitle", snapshot->ancs_notification.subtitle);
+    cJSON_AddStringToObject(ancs, "message", snapshot->ancs_notification.message);
+    cJSON_AddItemToObject(root, "ancs", ancs);
+
+    cJSON_AddStringToObject(root, "last_source",
+                            system_status_control_source_to_string(snapshot->last_source));
+    cJSON_AddNumberToObject(last_result, "code", snapshot->last_result_code);
+    cJSON_AddStringToObject(last_result, "msg", snapshot->last_result_msg);
+    cJSON_AddItemToObject(root, "last_result", last_result);
+
+    if (!cJSON_PrintPreallocated(root, response, (int)response_size, false)) {
+        snprintf(response, response_size, "{}");
+    }
+    cJSON_Delete(root);
 }
 
 static esp_err_t index_get_handler(httpd_req_t *req)
@@ -235,7 +265,6 @@ static esp_err_t led_post_handler(httpd_req_t *req)
 
     system_status_set_led_command(&command);
     system_status_set_last_result(0, "ok");
-    ble_led_service_notify_state(0, 0, "ok");
 
     char response[128];
     httpd_resp_set_type(req, "application/json");
@@ -249,7 +278,7 @@ static esp_err_t led_post_handler(httpd_req_t *req)
 static esp_err_t state_get_handler(httpd_req_t *req)
 {
     system_status_snapshot_t snapshot = {0};
-    char response[384];
+    char response[1024];
 
     system_status_get_snapshot(&snapshot);
     append_state_json(response, sizeof(response), &snapshot);
@@ -257,32 +286,9 @@ static esp_err_t state_get_handler(httpd_req_t *req)
     return httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
 }
 
-static void wifi_reset_restart_task(void *arg)
-{
-    (void) arg;
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
-}
-
 static esp_err_t wifi_reset_post_handler(httpd_req_t *req)
 {
-    char response[64];
-
-    if (wifi_manager_reset_config() != ESP_OK) {
-        return send_json_error(req, "500 Internal Server Error", "failed to reset wifi");
-    }
-
-    system_status_set_last_result(0, "wifi reset");
-    httpd_resp_set_type(req, "application/json");
-    snprintf(response, sizeof(response), "{\"ok\":true,\"restarting\":true}");
-    esp_err_t ret = httpd_resp_send(req, response, HTTPD_RESP_USE_STRLEN);
-
-    if (xTaskCreate(wifi_reset_restart_task, "wifi_reset_restart", 2048, NULL, 5, NULL) != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create Wi-Fi reset restart task");
-        esp_restart();
-    }
-
-    return ret;
+    return send_json_error(req, "409 Conflict", "fixed wifi credentials are compiled in");
 }
 
 esp_err_t http_server_app_start(void)

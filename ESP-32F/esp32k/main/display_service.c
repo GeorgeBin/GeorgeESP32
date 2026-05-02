@@ -11,7 +11,6 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "ble_provisioning.h"
 #include "system_status.h"
 
 #define TFT_SPI_HOST SPI2_HOST
@@ -99,6 +98,11 @@ static const uint8_t FONT_LOWER[26][5] = {
 
 static const uint8_t FONT_COLON[5] = {0x00, 0x36, 0x36, 0x00, 0x00};
 static const uint8_t FONT_DOT[5] = {0x00, 0x60, 0x60, 0x00, 0x00};
+static const uint8_t FONT_DASH[5] = {0x08, 0x08, 0x08, 0x08, 0x08};
+static const uint8_t FONT_UNDERSCORE[5] = {0x40, 0x40, 0x40, 0x40, 0x40};
+static const uint8_t FONT_SLASH[5] = {0x20, 0x10, 0x08, 0x04, 0x02};
+static const uint8_t FONT_HASH[5] = {0x14, 0x7F, 0x14, 0x7F, 0x14};
+static const uint8_t FONT_QUESTION[5] = {0x02, 0x01, 0x51, 0x09, 0x06};
 static const uint8_t FONT_SPACE[5] = {0x00, 0x00, 0x00, 0x00, 0x00};
 
 static const uint8_t CMD_FRMCTR1[] = {0x01, 0x2C, 0x2D};
@@ -280,10 +284,20 @@ static const uint8_t *display_get_glyph(char c)
         return FONT_COLON;
     case '.':
         return FONT_DOT;
+    case '-':
+        return FONT_DASH;
+    case '_':
+        return FONT_UNDERSCORE;
+    case '/':
+        return FONT_SLASH;
+    case '#':
+        return FONT_HASH;
+    case '?':
+        return FONT_QUESTION;
     case ' ':
         return FONT_SPACE;
     default:
-        return FONT_SPACE;
+        return FONT_QUESTION;
     }
 }
 
@@ -322,61 +336,71 @@ static esp_err_t display_draw_string(uint16_t x, uint16_t y, const char *text, u
     return ESP_OK;
 }
 
+static void display_sanitize_ascii(char *dest, size_t dest_size, const char *src,
+                                   size_t offset, size_t max_chars)
+{
+    size_t out = 0;
+    size_t in = 0;
+
+    if (dest_size == 0) {
+        return;
+    }
+
+    while (src != NULL && src[in] != '\0' && in < offset) {
+        in++;
+    }
+    while (src != NULL && src[in] != '\0' && out < max_chars && out < (dest_size - 1)) {
+        unsigned char c = (unsigned char)src[in++];
+        dest[out++] = (c >= 32 && c <= 126) ? (char)c : '?';
+    }
+    dest[out] = '\0';
+}
+
 static esp_err_t display_render_status(const system_status_snapshot_t *snapshot)
 {
     char line[32];
+    char app_text[17];
+    char title_text[15];
+    char message_text[17];
+    char message_continuation[22];
 
     ESP_RETURN_ON_ERROR(display_fill_rect(0, 0, TFT_WIDTH, TFT_HEIGHT, COLOR_BLACK), TAG,
                         "clear display failed");
 
-    ESP_RETURN_ON_ERROR(display_draw_string(4, 0, "George LED", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+    ESP_RETURN_ON_ERROR(display_draw_string(4, 0, "George ANCS", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw title failed");
 
-    snprintf(line, sizeof(line), "State: %s", system_status_device_state_to_string(snapshot->device_state));
+    snprintf(line, sizeof(line), "IP: %s", snapshot->ip_address);
     ESP_RETURN_ON_ERROR(display_draw_string(4, 16, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw state failed");
+                        "draw ip failed");
 
-    if (snapshot->device_state == DEVICE_STATE_WAIT_PROVISIONING ||
-        snapshot->device_state == DEVICE_STATE_PROVISIONING) {
-        ESP_RETURN_ON_ERROR(display_draw_string(4, 32, "Mode: provisioning", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                            "draw provisioning mode failed");
-        ESP_RETURN_ON_ERROR(display_draw_string(4, 48, "Name:", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                            "draw provisioning name label failed");
-        ESP_RETURN_ON_ERROR(display_draw_string(4, 64, BLE_PROVISIONING_DEVICE_NAME, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                            "draw provisioning name failed");
-        snprintf(line, sizeof(line), "PoP: %s", BLE_PROVISIONING_POP);
-        ESP_RETURN_ON_ERROR(display_draw_string(4, 80, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                            "draw provisioning pop failed");
-        ESP_RETURN_ON_ERROR(display_draw_string(4, 96, "Use BLE app", COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                            "draw provisioning tip failed");
-        return ESP_OK;
-    }
-
-    snprintf(line, sizeof(line), "WiFi: %s", snapshot->wifi_connected ? "connected" : "disconnected");
+    snprintf(line, sizeof(line), "WiFi: %s", snapshot->wifi_connected ? "yes" : "no");
     ESP_RETURN_ON_ERROR(display_draw_string(4, 32, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
                         "draw wifi failed");
 
-    snprintf(line, sizeof(line), "BLE: %s", snapshot->ble_connected ? "connected" : "disconnected");
+    snprintf(line, sizeof(line), "ANCS: %s", snapshot->ancs_connected ? "ready" : "wait");
     ESP_RETURN_ON_ERROR(display_draw_string(4, 48, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw ble failed");
+                        "draw ancs failed");
 
-    snprintf(line, sizeof(line), "Source: %s",
-             system_status_control_source_to_string(snapshot->last_source));
+    display_sanitize_ascii(app_text, sizeof(app_text), snapshot->ancs_notification.app_id, 0, 16);
+    snprintf(line, sizeof(line), "App: %s", app_text);
     ESP_RETURN_ON_ERROR(display_draw_string(4, 64, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw source failed");
+                        "draw app failed");
 
-    snprintf(line, sizeof(line), "Color: %02X%02X%02X", snapshot->led.color_r,
-             snapshot->led.color_g, snapshot->led.color_b);
+    display_sanitize_ascii(title_text, sizeof(title_text), snapshot->ancs_notification.title, 0, 14);
+    snprintf(line, sizeof(line), "Title: %s", title_text);
     ESP_RETURN_ON_ERROR(display_draw_string(4, 80, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw color failed");
+                        "draw title text failed");
 
-    snprintf(line, sizeof(line), "Mode: %s", system_status_led_mode_to_string(snapshot->led.mode));
+    display_sanitize_ascii(message_text, sizeof(message_text), snapshot->ancs_notification.message, 0, 16);
+    snprintf(line, sizeof(line), "Msg: %s", message_text);
     ESP_RETURN_ON_ERROR(display_draw_string(4, 96, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw led failed");
+                        "draw message failed");
 
-    snprintf(line, sizeof(line), "Result: %s", snapshot->last_result_code == 0 ? "OK" : "Error");
-    ESP_RETURN_ON_ERROR(display_draw_string(4, 112, line, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
-                        "draw result failed");
+    display_sanitize_ascii(message_continuation, sizeof(message_continuation),
+                           snapshot->ancs_notification.message, 16, 21);
+    ESP_RETURN_ON_ERROR(display_draw_string(4, 112, message_continuation, COLOR_WHITE, COLOR_BLACK, 1, 21), TAG,
+                        "draw message continuation failed");
 
     return ESP_OK;
 }
@@ -387,6 +411,7 @@ static bool display_snapshot_equals(const system_status_snapshot_t *lhs,
     return lhs->wifi_connected == rhs->wifi_connected &&
            lhs->device_state == rhs->device_state &&
            lhs->ble_connected == rhs->ble_connected &&
+           lhs->ancs_connected == rhs->ancs_connected &&
            lhs->last_source == rhs->last_source &&
            lhs->last_result_code == rhs->last_result_code &&
            lhs->led.color_r == rhs->led.color_r &&
@@ -396,7 +421,12 @@ static bool display_snapshot_equals(const system_status_snapshot_t *lhs,
            lhs->led.mode == rhs->led.mode &&
            strcmp(lhs->wifi_ssid, rhs->wifi_ssid) == 0 &&
            strcmp(lhs->ip_address, rhs->ip_address) == 0 &&
-           strcmp(lhs->last_result_msg, rhs->last_result_msg) == 0;
+           strcmp(lhs->last_result_msg, rhs->last_result_msg) == 0 &&
+           strcmp(lhs->ancs_notification.app_id, rhs->ancs_notification.app_id) == 0 &&
+           strcmp(lhs->ancs_notification.title, rhs->ancs_notification.title) == 0 &&
+           strcmp(lhs->ancs_notification.subtitle, rhs->ancs_notification.subtitle) == 0 &&
+           strcmp(lhs->ancs_notification.message, rhs->ancs_notification.message) == 0 &&
+           lhs->ancs_notification.notification_uid == rhs->ancs_notification.notification_uid;
 }
 
 static void display_task(void *arg)

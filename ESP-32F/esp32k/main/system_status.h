@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 
+#include "ancs_notification_parser.h"
 #include "esp_err.h"
 #include "message_center.h"
 
@@ -21,8 +22,10 @@ typedef struct {
     bool wifi_connected;
     bool ble_enabled;
     bool ble_connected;
+    bool ancs_connected;
     char wifi_ssid[33];
     char ip_address[16];
+    ancs_notification_event_t ancs_notification;
     led_command_t led;
     control_source_t last_source;
     int last_result_code;
@@ -33,6 +36,8 @@ esp_err_t system_status_init(void);
 void system_status_set_device_state(device_state_t state);
 void system_status_set_wifi(const char *ssid, const char *ip_or_null, bool connected);
 void system_status_set_ble(bool enabled, bool connected);
+void system_status_set_ancs_connected(bool connected);
+void system_status_set_ancs_notification(const ancs_notification_event_t *event);
 void system_status_set_led_command(const led_command_t *command);
 void system_status_set_last_result(int code, const char *msg);
 void system_status_get_snapshot(system_status_snapshot_t *snapshot);

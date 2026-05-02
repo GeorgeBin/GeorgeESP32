@@ -12,6 +12,7 @@
 #include "freertos/event_groups.h"
 #include "nvs_flash.h"
 #include "system_status.h"
+#include "wifi_fixed_config.h"
 
 #define WIFI_MAXIMUM_RETRY 5
 
@@ -48,16 +49,9 @@ static esp_err_t wifi_manager_init_nvs(void)
     return ret;
 }
 
-static void wifi_manager_load_ssid(void)
+static void wifi_manager_set_fixed_ssid(void)
 {
-    wifi_config_t wifi_config = {0};
-
-    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_config) != ESP_OK) {
-        s_configured_ssid[0] = '\0';
-        return;
-    }
-
-    strlcpy(s_configured_ssid, (const char *) wifi_config.sta.ssid, sizeof(s_configured_ssid));
+    strlcpy(s_configured_ssid, WIFI_FIXED_SSID, sizeof(s_configured_ssid));
 }
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
@@ -126,32 +120,32 @@ esp_err_t wifi_manager_init(void)
             TAG, "register IP handler failed");
     }
 
-    wifi_manager_load_ssid();
+    wifi_manager_set_fixed_ssid();
     return ESP_OK;
 }
 
 bool wifi_manager_is_provisioned(void)
 {
-    wifi_config_t wifi_config = {0};
-
-    if (esp_wifi_get_config(WIFI_IF_STA, &wifi_config) != ESP_OK) {
-        return false;
-    }
-
-    return wifi_config.sta.ssid[0] != '\0';
+    return WIFI_FIXED_SSID[0] != '\0' && strcmp(WIFI_FIXED_SSID, "YOUR_WIFI_SSID") != 0;
 }
 
 esp_err_t wifi_manager_start_sta(void)
 {
-    wifi_manager_load_ssid();
+    wifi_config_t wifi_config = {0};
+
+    wifi_manager_set_fixed_ssid();
     ESP_RETURN_ON_FALSE(s_configured_ssid[0] != '\0', ESP_ERR_INVALID_STATE, TAG,
-                        "no saved Wi-Fi config");
+                        "fixed Wi-Fi SSID is empty");
 
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     s_retry_num = 0;
     system_status_set_wifi(s_configured_ssid, NULL, false);
     system_status_set_device_state(DEVICE_STATE_WIFI_CONNECTING);
+    strlcpy((char *)wifi_config.sta.ssid, WIFI_FIXED_SSID, sizeof(wifi_config.sta.ssid));
+    strlcpy((char *)wifi_config.sta.password, WIFI_FIXED_PASSWORD, sizeof(wifi_config.sta.password));
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set mode failed");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config), TAG,
+                        "set fixed Wi-Fi config failed");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start failed");
 
     ESP_LOGI(TAG, "Wi-Fi STA started. SSID=%s", s_configured_ssid);
@@ -183,12 +177,6 @@ bool wifi_manager_wait_connected(uint32_t timeout_ms)
 
 esp_err_t wifi_manager_reset_config(void)
 {
-    system_status_set_device_state(DEVICE_STATE_RESETTING_WIFI);
-    esp_wifi_disconnect();
-    esp_wifi_stop();
-    ESP_RETURN_ON_ERROR(esp_wifi_restore(), TAG, "restore Wi-Fi config failed");
-    s_configured_ssid[0] = '\0';
-    system_status_set_wifi("", NULL, false);
-    ESP_LOGI(TAG, "Wi-Fi config cleared");
-    return ESP_OK;
+    ESP_LOGW(TAG, "Wi-Fi reset is disabled because this firmware uses fixed credentials");
+    return ESP_ERR_NOT_SUPPORTED;
 }
