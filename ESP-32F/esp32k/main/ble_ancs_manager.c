@@ -29,6 +29,7 @@
 #define ANCS_HID_SERVICE_UUID 0x1812
 #define ANCS_GENERIC_HID_APPEARANCE 0x03C0
 #define ANCS_PENDING_SOURCE_COUNT 4
+#define ANCS_DIRECTED_ADV_DURATION_MS 3000
 
 #define ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES 0
 #define ANCS_ATTRIBUTE_APP_IDENTIFIER 0
@@ -41,9 +42,14 @@ typedef enum {
     ANCS_STATE_BLE_INIT,
     ANCS_STATE_ADVERTISING,
     ANCS_STATE_CONNECTED,
+    ANCS_STATE_SECURED,
+    ANCS_STATE_DISCOVERING_SERVICE,
+    ANCS_STATE_DISCOVERING_CHARACTERISTICS,
     ANCS_STATE_BONDED,
     ANCS_STATE_SERVICE_DISCOVERED,
+    ANCS_STATE_SUBSCRIBING_NOTIFICATION_SOURCE,
     ANCS_STATE_NOTIFICATION_SOURCE_SUBSCRIBED,
+    ANCS_STATE_SUBSCRIBING_DATA_SOURCE,
     ANCS_STATE_DATA_SOURCE_SUBSCRIBED,
     ANCS_STATE_READY,
     ANCS_STATE_DISCONNECTED,
@@ -78,19 +84,32 @@ static const ble_uuid128_t DATA_SOURCE_UUID = BLE_UUID128_INIT(
 static uint8_t s_own_addr_type;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_service_end_handle;
+static uint16_t s_notification_source_def_handle;
 static uint16_t s_notification_source_handle;
+static uint16_t s_data_source_def_handle;
 static uint16_t s_data_source_handle;
+static uint16_t s_control_point_def_handle;
 static uint16_t s_control_point_handle;
 static uint16_t s_mtu_size = 23;
 static uint8_t s_data_source_buffer[ANCS_MAX_DATA_SOURCE_LEN];
 static uint16_t s_data_source_len;
 static esp_timer_handle_t s_data_flush_timer;
 static bool s_started;
+static bool s_directed_advertising;
+static ancs_subscribe_target_t s_active_subscribe_target;
+static uint16_t s_active_cccd_handle;
 static ancs_source_event_t s_pending_source_events[ANCS_PENDING_SOURCE_COUNT];
 static size_t s_next_pending_source_index;
 static const ble_uuid16_t HID_SERVICE_UUID = BLE_UUID16_INIT(ANCS_HID_SERVICE_UUID);
 
 static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg);
+static int descriptor_discovered_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                    uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc,
+                                    void *arg);
+static int characteristic_discovered_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                        const struct ble_gatt_chr *chr, void *arg);
+static int service_discovered_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                 const struct ble_gatt_svc *svc, void *arg);
 void ble_store_config_init(void);
 
 static const ancs_attribute_request_t ATTRIBUTE_REQUESTS[] = {
@@ -111,12 +130,22 @@ static const char *ancs_state_to_string(ancs_state_t state)
         return "ADVERTISING";
     case ANCS_STATE_CONNECTED:
         return "CONNECTED";
+    case ANCS_STATE_SECURED:
+        return "SECURED";
+    case ANCS_STATE_DISCOVERING_SERVICE:
+        return "DISCOVERING_SERVICE";
+    case ANCS_STATE_DISCOVERING_CHARACTERISTICS:
+        return "DISCOVERING_CHARACTERISTICS";
     case ANCS_STATE_BONDED:
         return "BONDED";
     case ANCS_STATE_SERVICE_DISCOVERED:
         return "SERVICE_DISCOVERED";
+    case ANCS_STATE_SUBSCRIBING_NOTIFICATION_SOURCE:
+        return "SUBSCRIBING_NOTIFICATION_SOURCE";
     case ANCS_STATE_NOTIFICATION_SOURCE_SUBSCRIBED:
         return "NOTIFICATION_SOURCE_SUBSCRIBED";
+    case ANCS_STATE_SUBSCRIBING_DATA_SOURCE:
+        return "SUBSCRIBING_DATA_SOURCE";
     case ANCS_STATE_DATA_SOURCE_SUBSCRIBED:
         return "DATA_SOURCE_SUBSCRIBED";
     case ANCS_STATE_READY:
@@ -152,7 +181,41 @@ static esp_err_t init_nvs_once(void)
     return ret;
 }
 
-static void advertise(void)
+static void reset_connection_state(void)
+{
+    s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_service_end_handle = 0;
+    s_notification_source_def_handle = 0;
+    s_notification_source_handle = 0;
+    s_data_source_def_handle = 0;
+    s_data_source_handle = 0;
+    s_control_point_def_handle = 0;
+    s_control_point_handle = 0;
+    s_data_source_len = 0;
+    s_active_cccd_handle = 0;
+    memset(s_pending_source_events, 0, sizeof(s_pending_source_events));
+    s_next_pending_source_index = 0;
+}
+
+static uint16_t descriptor_end_handle(uint16_t value_handle)
+{
+    uint16_t end_handle = s_service_end_handle;
+    const uint16_t def_handles[] = {
+        s_notification_source_def_handle,
+        s_data_source_def_handle,
+        s_control_point_def_handle,
+    };
+
+    for (size_t i = 0; i < sizeof(def_handles) / sizeof(def_handles[0]); ++i) {
+        if (def_handles[i] > value_handle && (uint16_t)(def_handles[i] - 1) < end_handle) {
+            end_handle = def_handles[i] - 1;
+        }
+    }
+
+    return end_handle;
+}
+
+static void advertise_to_peer(const ble_addr_t *peer_addr)
 {
     struct ble_gap_adv_params adv_params = {0};
     struct ble_hs_adv_fields fields = {0};
@@ -186,9 +249,20 @@ static void advertise(void)
         return;
     }
 
-    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
-    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
-    rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &adv_params,
+    if (peer_addr != NULL) {
+        adv_params.conn_mode = BLE_GAP_CONN_MODE_DIR;
+        adv_params.disc_mode = BLE_GAP_DISC_MODE_NON;
+        adv_params.high_duty_cycle = 1;
+        s_directed_advertising = true;
+    } else {
+        adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
+        adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+        s_directed_advertising = false;
+    }
+
+    rc = ble_gap_adv_start(s_own_addr_type, peer_addr,
+                           peer_addr != NULL ? ANCS_DIRECTED_ADV_DURATION_MS : BLE_HS_FOREVER,
+                           &adv_params,
                            ble_ancs_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "start advertising failed: %d", rc);
@@ -198,7 +272,57 @@ static void advertise(void)
 
     system_status_set_ble(true, false);
     set_ancs_state(ANCS_STATE_ADVERTISING);
-    ESP_LOGI(TAG, "[BLE] advertising started as %s", name);
+    if (peer_addr != NULL) {
+        ESP_LOGI(TAG, "[BLE] directed advertising to bonded peer");
+    } else {
+        ESP_LOGI(TAG, "[BLE] advertising started as %s", name);
+    }
+}
+
+static bool advertise_to_bonded_peer(void)
+{
+    ble_addr_t peer_addr = {0};
+    int peer_count = 0;
+    const int rc = ble_store_util_bonded_peers(&peer_addr, &peer_count, 1);
+
+    if (rc != 0 || peer_count == 0) {
+        ESP_LOGI(TAG, "[BLE] no bonded peer; starting general advertising");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[BLE] bonded peer found; starting directed advertising");
+    advertise_to_peer(&peer_addr);
+    return true;
+}
+
+static void reconnect_or_advertise(void)
+{
+    if (!advertise_to_bonded_peer()) {
+        advertise_to_peer(NULL);
+    }
+}
+
+static void advertise(void)
+{
+    advertise_to_peer(NULL);
+}
+
+static int subscribe_characteristic(ancs_subscribe_target_t target)
+{
+    uint16_t value_handle = 0;
+
+    if (target == ANCS_SUBSCRIBE_NOTIFICATION_SOURCE) {
+        value_handle = s_notification_source_handle;
+        set_ancs_state(ANCS_STATE_SUBSCRIBING_NOTIFICATION_SOURCE);
+    } else {
+        value_handle = s_data_source_handle;
+        set_ancs_state(ANCS_STATE_SUBSCRIBING_DATA_SOURCE);
+    }
+
+    s_active_subscribe_target = target;
+    s_active_cccd_handle = 0;
+    return ble_gattc_disc_all_dscs(s_conn_handle, value_handle, descriptor_end_handle(value_handle),
+                                   descriptor_discovered_cb, (void *)(uintptr_t)target);
 }
 
 static int subscribe_complete_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -217,6 +341,7 @@ static int subscribe_complete_cb(uint16_t conn_handle, const struct ble_gatt_err
     if (target == ANCS_SUBSCRIBE_NOTIFICATION_SOURCE) {
         ESP_LOGI(TAG, "[ANCS] notification source subscribed");
         set_ancs_state(ANCS_STATE_NOTIFICATION_SOURCE_SUBSCRIBED);
+        return subscribe_characteristic(ANCS_SUBSCRIBE_DATA_SOURCE);
     } else {
         ESP_LOGI(TAG, "[ANCS] data source subscribed");
         set_ancs_state(ANCS_STATE_DATA_SOURCE_SUBSCRIBED);
@@ -230,26 +355,62 @@ static int descriptor_discovered_cb(uint16_t conn_handle, const struct ble_gatt_
                                     uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc,
                                     void *arg)
 {
-    const ancs_subscribe_target_t target = (ancs_subscribe_target_t)(uintptr_t)arg;
     const uint8_t cccd_value[2] = {0x01, 0x00};
 
+    (void)arg;
     (void)chr_val_handle;
 
     if (error->status != 0) {
         if (error->status == BLE_HS_EDONE) {
-            return 0;
+            if (s_active_cccd_handle == 0) {
+                ESP_LOGE(TAG, "CCCD not found for subscribe target=%d", s_active_subscribe_target);
+                set_ancs_state(ANCS_STATE_ERROR);
+                return BLE_HS_ENOENT;
+            }
+            return ble_gattc_write_flat(conn_handle, s_active_cccd_handle,
+                                        cccd_value, sizeof(cccd_value),
+                                        subscribe_complete_cb,
+                                        (void *)(uintptr_t)s_active_subscribe_target);
         }
         ESP_LOGE(TAG, "descriptor discovery failed: status=%d", error->status);
         set_ancs_state(ANCS_STATE_ERROR);
         return error->status;
     }
 
-    if (ble_uuid_cmp(&dsc->uuid.u, BLE_UUID16_DECLARE(BLE_GATT_DSC_CLT_CFG_UUID16)) != 0) {
-        return 0;
+    if (ble_uuid_cmp(&dsc->uuid.u, BLE_UUID16_DECLARE(BLE_GATT_DSC_CLT_CFG_UUID16)) == 0) {
+        s_active_cccd_handle = dsc->handle;
     }
 
-    return ble_gattc_write_flat(conn_handle, dsc->handle, cccd_value, sizeof(cccd_value),
-                                subscribe_complete_cb, (void *)(uintptr_t)target);
+    return 0;
+}
+
+static int start_characteristic_discovery(uint16_t conn_handle, uint16_t start_handle,
+                                          uint16_t end_handle)
+{
+    set_ancs_state(ANCS_STATE_DISCOVERING_CHARACTERISTICS);
+    return ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
+                                   characteristic_discovered_cb, NULL);
+}
+
+static int start_ancs_service_discovery(uint16_t conn_handle)
+{
+    set_ancs_state(ANCS_STATE_DISCOVERING_SERVICE);
+    return ble_gattc_disc_svc_by_uuid(conn_handle, &APPLE_NC_UUID.u,
+                                      service_discovered_cb, NULL);
+}
+
+static int start_notification_subscriptions(void)
+{
+    if (s_notification_source_handle == 0 || s_data_source_handle == 0 ||
+        s_control_point_handle == 0) {
+        ESP_LOGE(TAG, "ANCS characteristics missing: ns=%u ds=%u cp=%u",
+                 s_notification_source_handle, s_data_source_handle,
+                 s_control_point_handle);
+        set_ancs_state(ANCS_STATE_ERROR);
+        return BLE_HS_ENOENT;
+    }
+
+    return subscribe_characteristic(ANCS_SUBSCRIBE_NOTIFICATION_SOURCE);
 }
 
 static int characteristic_discovered_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -259,14 +420,7 @@ static int characteristic_discovered_cb(uint16_t conn_handle, const struct ble_g
 
     if (error->status != 0) {
         if (error->status == BLE_HS_EDONE) {
-            if (s_notification_source_handle == 0 || s_data_source_handle == 0 ||
-                s_control_point_handle == 0) {
-                ESP_LOGE(TAG, "ANCS characteristics missing: ns=%u ds=%u cp=%u",
-                         s_notification_source_handle, s_data_source_handle,
-                         s_control_point_handle);
-                set_ancs_state(ANCS_STATE_ERROR);
-            }
-            return 0;
+            return start_notification_subscriptions();
         }
         ESP_LOGE(TAG, "characteristic discovery failed: status=%d", error->status);
         set_ancs_state(ANCS_STATE_ERROR);
@@ -275,22 +429,21 @@ static int characteristic_discovered_cb(uint16_t conn_handle, const struct ble_g
 
     if ((chr->properties & BLE_GATT_CHR_PROP_NOTIFY) &&
         ble_uuid_cmp(&chr->uuid.u, &NOTIFICATION_SOURCE_UUID.u) == 0) {
+        s_notification_source_def_handle = chr->def_handle;
         s_notification_source_handle = chr->val_handle;
         ESP_LOGI(TAG, "[ANCS] notification source found");
-        return ble_gattc_disc_all_dscs(conn_handle, chr->val_handle, s_service_end_handle,
-                                       descriptor_discovered_cb,
-                                       (void *)(uintptr_t)ANCS_SUBSCRIBE_NOTIFICATION_SOURCE);
+        return 0;
     }
     if ((chr->properties & BLE_GATT_CHR_PROP_NOTIFY) &&
         ble_uuid_cmp(&chr->uuid.u, &DATA_SOURCE_UUID.u) == 0) {
+        s_data_source_def_handle = chr->def_handle;
         s_data_source_handle = chr->val_handle;
         ESP_LOGI(TAG, "[ANCS] data source found");
-        return ble_gattc_disc_all_dscs(conn_handle, chr->val_handle, s_service_end_handle,
-                                       descriptor_discovered_cb,
-                                       (void *)(uintptr_t)ANCS_SUBSCRIBE_DATA_SOURCE);
+        return 0;
     }
     if ((chr->properties & BLE_GATT_CHR_PROP_WRITE) &&
         ble_uuid_cmp(&chr->uuid.u, &CONTROL_POINT_UUID.u) == 0) {
+        s_control_point_def_handle = chr->def_handle;
         s_control_point_handle = chr->val_handle;
         ESP_LOGI(TAG, "[ANCS] control point found");
     }
@@ -320,8 +473,7 @@ static int service_discovered_cb(uint16_t conn_handle, const struct ble_gatt_err
     s_service_end_handle = svc->end_handle;
     set_ancs_state(ANCS_STATE_SERVICE_DISCOVERED);
     ESP_LOGI(TAG, "[ANCS] service discovered");
-    return ble_gattc_disc_all_chrs(conn_handle, svc->start_handle, svc->end_handle,
-                                   characteristic_discovered_cb, NULL);
+    return start_characteristic_discovery(conn_handle, svc->start_handle, svc->end_handle);
 }
 
 static void request_notification_attributes(uint32_t notification_uid)
@@ -482,11 +634,13 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "[BLE] connection failed: status=%d", event->connect.status);
-            advertise();
+            reconnect_or_advertise();
             return 0;
         }
 
+        reset_connection_state();
         s_conn_handle = event->connect.conn_handle;
+        s_directed_advertising = false;
         system_status_set_ble(true, true);
         set_ancs_state(ANCS_STATE_CONNECTED);
         ESP_LOGI(TAG, "[BLE] connected");
@@ -499,19 +653,16 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "[BLE] disconnected: reason=%d", event->disconnect.reason);
-        s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-        s_notification_source_handle = 0;
-        s_data_source_handle = 0;
-        s_control_point_handle = 0;
-        s_data_source_len = 0;
-        memset(s_pending_source_events, 0, sizeof(s_pending_source_events));
-        s_next_pending_source_index = 0;
+        reset_connection_state();
         system_status_set_ble(true, false);
         set_ancs_state(ANCS_STATE_DISCONNECTED);
-        advertise();
+        reconnect_or_advertise();
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
+        if (s_directed_advertising) {
+            ESP_LOGI(TAG, "[BLE] directed advertising complete; falling back to general advertising");
+        }
         advertise();
         return 0;
 
@@ -521,10 +672,10 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
             set_ancs_state(ANCS_STATE_ERROR);
             return 0;
         }
+        set_ancs_state(ANCS_STATE_SECURED);
         set_ancs_state(ANCS_STATE_BONDED);
         ESP_LOGI(TAG, "[BLE] bonded");
-        return ble_gattc_disc_svc_by_uuid(event->enc_change.conn_handle, &APPLE_NC_UUID.u,
-                                          service_discovered_cb, NULL);
+        return start_ancs_service_discovery(event->enc_change.conn_handle);
 
     case BLE_GAP_EVENT_NOTIFY_RX:
         handle_notification_rx(event);
@@ -572,7 +723,7 @@ static void ble_ancs_on_sync(void)
     }
 
     ESP_LOGI(TAG, "[BLE] host synced; starting advertising");
-    advertise();
+    reconnect_or_advertise();
 }
 
 static void ble_ancs_host_task(void *param)
