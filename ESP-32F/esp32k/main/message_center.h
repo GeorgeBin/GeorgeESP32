@@ -17,6 +17,7 @@ typedef enum {
     CONTROL_SOURCE_NONE = 0,
     CONTROL_SOURCE_HTTP,
     CONTROL_SOURCE_BLE,
+    CONTROL_SOURCE_ANCS,
 } control_source_t;
 
 typedef struct {

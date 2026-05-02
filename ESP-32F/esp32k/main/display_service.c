@@ -426,7 +426,10 @@ static bool display_snapshot_equals(const system_status_snapshot_t *lhs,
            strcmp(lhs->ancs_notification.title, rhs->ancs_notification.title) == 0 &&
            strcmp(lhs->ancs_notification.subtitle, rhs->ancs_notification.subtitle) == 0 &&
            strcmp(lhs->ancs_notification.message, rhs->ancs_notification.message) == 0 &&
-           lhs->ancs_notification.notification_uid == rhs->ancs_notification.notification_uid;
+           lhs->ancs_notification.notification_uid == rhs->ancs_notification.notification_uid &&
+           lhs->ancs_notification.category_id == rhs->ancs_notification.category_id &&
+           lhs->last_ancs_rule_matched == rhs->last_ancs_rule_matched &&
+           strcmp(lhs->last_ancs_rule_label, rhs->last_ancs_rule_label) == 0;
 }
 
 static void display_task(void *arg)

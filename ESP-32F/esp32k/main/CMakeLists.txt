@@ -7,6 +7,7 @@ idf_component_register(
         "ble_ancs_manager.c"
         "ancs_notification_parser.c"
         "notification_filter.c"
+        "notification_rules.c"
         "wifi_manager.c"
         "http_server_app.c"
         "display_service.c"

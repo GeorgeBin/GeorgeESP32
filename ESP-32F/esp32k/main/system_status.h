@@ -26,6 +26,8 @@ typedef struct {
     char wifi_ssid[33];
     char ip_address[16];
     ancs_notification_event_t ancs_notification;
+    bool last_ancs_rule_matched;
+    char last_ancs_rule_label[32];
     led_command_t led;
     control_source_t last_source;
     int last_result_code;
@@ -38,6 +40,7 @@ void system_status_set_wifi(const char *ssid, const char *ip_or_null, bool conne
 void system_status_set_ble(bool enabled, bool connected);
 void system_status_set_ancs_connected(bool connected);
 void system_status_set_ancs_notification(const ancs_notification_event_t *event);
+void system_status_set_ancs_rule_result(bool matched, const char *label);
 void system_status_set_led_command(const led_command_t *command);
 void system_status_set_last_result(int code, const char *msg);
 void system_status_get_snapshot(system_status_snapshot_t *snapshot);

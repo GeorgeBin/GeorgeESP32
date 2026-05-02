@@ -11,6 +11,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "message_center.h"
+#include "notification_rules.h"
 #include "system_status.h"
 
 static const char *TAG = "http_server";
@@ -23,38 +24,34 @@ static const char *INDEX_HTML =
     "<head>"
     "<meta charset=\"UTF-8\">"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
-    "<title>ESP32 LED Control</title>"
+    "<title>ESP32 通知灯效</title>"
     "<style>"
-    ":root{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#0f172a;background:#e2e8f0;}"
-    "body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(135deg,#dbeafe,#f8fafc 55%,#bfdbfe);}"
-    ".panel{width:min(92vw,420px);background:rgba(255,255,255,.92);padding:24px;border-radius:20px;box-shadow:0 18px 40px rgba(15,23,42,.16);}"
-    "h1{margin:0 0 16px;font-size:1.5rem;}label{display:block;margin:14px 0 8px;font-weight:600;}"
-    "input,select,button{width:100%;border:none;border-radius:12px;padding:12px;font-size:1rem;}"
-    "button{margin-top:18px;background:#0f172a;color:#fff;font-weight:700;cursor:pointer;}"
-    ".status{margin-top:16px;padding:12px;border-radius:12px;background:#eff6ff;color:#1d4ed8;min-height:24px;}"
-    ".tips{margin-top:16px;color:#475569;font-size:.92rem;line-height:1.5;}"
+    ":root{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#17202a;background:#eef2f3;}"
+    "body{margin:0;min-height:100vh;background:#eef2f3;}main{max-width:1180px;margin:0 auto;padding:18px;}"
+    "h1{font-size:22px;margin:0 0 14px}.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 16px}"
+    "button{border:1px solid #22313f;background:#22313f;color:#fff;border-radius:6px;padding:8px 12px;font-weight:700}"
+    "button.secondary{background:#fff;color:#22313f}.status{padding:8px 10px;border-radius:6px;background:#dff3ff;color:#075985}"
+    "table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #ccd6dd}th,td{border-bottom:1px solid #e3e8ec;padding:7px;text-align:left;font-size:13px}"
+    "th{background:#f8fafb}input,select{width:100%;box-sizing:border-box;border:1px solid #cbd5db;border-radius:4px;padding:6px;background:#fff}"
+    "input[type=color]{padding:1px;height:32px}.enabled{width:auto}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.panel{background:#fff;border:1px solid #ccd6dd;padding:12px;border-radius:6px}"
+    "@media(max-width:820px){main{padding:10px}.grid{grid-template-columns:1fr}table{display:block;overflow:auto;white-space:nowrap}}"
     "</style>"
     "</head>"
-    "<body><main class=\"panel\"><h1>ESP32 RGB 控灯</h1>"
-    "<label for=\"color\">颜色</label><input id=\"color\" type=\"color\" value=\"#ffffff\">"
-    "<label for=\"mode\">模式</label><select id=\"mode\">"
-    "<option value=\"solid\">常亮</option>"
-    "<option value=\"breath\">呼吸</option>"
-    "<option value=\"blink\">闪烁</option>"
-    "</select>"
-    "<button id=\"submit\">发送命令</button>"
-    "<div class=\"status\" id=\"status\">等待发送</div>"
-    "<div class=\"tips\">接口：POST /api/led，JSON 字段为 color、mode 和 brightness。</div>"
+    "<body><main><h1>ESP32 iPhone 通知灯效</h1>"
+    "<div class=\"bar\"><button id=\"save\">保存规则</button><button class=\"secondary\" id=\"reset\">恢复默认</button><span class=\"status\" id=\"status\">加载中</span></div>"
+    "<div class=\"grid\"><section class=\"panel\"><h2>通知规则</h2><table><thead><tr><th>启用</th><th>名称</th><th>Bundle ID</th><th>类型</th><th>颜色</th><th>模式</th><th>亮度</th><th>周期</th><th>亮</th><th>灭</th></tr></thead><tbody id=\"rules\"></tbody></table></section>"
+    "<section class=\"panel\"><h2>手动测试</h2><label>颜色<input id=\"testColor\" type=\"color\" value=\"#ffffff\"></label><label>模式<select id=\"testMode\"><option value=\"solid\">常亮</option><option value=\"breath\">呼吸</option><option value=\"blink\">闪烁</option><option value=\"off\">关闭</option></select></label><button id=\"testLed\">发送测试灯效</button><h2>常见 Bundle ID</h2><table><tbody id=\"presets\"></tbody></table></section></div>"
     "</main><script>"
-    "const statusEl=document.getElementById('status');"
-    "document.getElementById('submit').addEventListener('click',async()=>{"
-    "const payload={color:document.getElementById('color').value,mode:document.getElementById('mode').value};"
-    "statusEl.textContent='发送中...';"
-    "try{const res=await fetch('/api/led',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});"
-    "const data=await res.json();"
-    "statusEl.textContent=data.ok?`已应用 ${data.color} / ${data.mode}`:(data.error||'请求失败');"
-    "}catch(err){statusEl.textContent='请求失败: '+err.message;}"
-    "});"
+    "const $=id=>document.getElementById(id),statusEl=$('status');let presets=[];"
+    "const modes=['solid','breath','blink','off'],kinds=['any','message','incoming_call'];"
+    "function opt(list,val){return list.map(x=>`<option value=\"${x}\" ${x===val?'selected':''}>${x}</option>`).join('')}"
+    "function row(r,i){return `<tr><td><input class=\"enabled\" type=\"checkbox\" ${r.enabled?'checked':''}></td><td><input class=\"label\" maxlength=\"31\" value=\"${r.label||''}\"></td><td><input class=\"app\" maxlength=\"63\" value=\"${r.app_id||''}\"></td><td><select class=\"kind\">${opt(kinds,r.kind||'any')}</select></td><td><input class=\"color\" type=\"color\" value=\"${r.color||'#ffffff'}\"></td><td><select class=\"mode\">${opt(modes,r.mode||'solid')}</select></td><td><input class=\"brightness\" type=\"number\" min=\"0\" max=\"100\" value=\"${r.brightness??100}\"></td><td><input class=\"period\" type=\"number\" min=\"1\" value=\"${r.period_ms??2000}\"></td><td><input class=\"on\" type=\"number\" min=\"1\" value=\"${r.on_ms??300}\"></td><td><input class=\"off\" type=\"number\" min=\"1\" value=\"${r.off_ms??300}\"></td></tr>`}"
+    "function collect(){return [...document.querySelectorAll('#rules tr')].map(tr=>({enabled:tr.querySelector('.enabled').checked,label:tr.querySelector('.label').value,app_id:tr.querySelector('.app').value,kind:tr.querySelector('.kind').value,color:tr.querySelector('.color').value,mode:tr.querySelector('.mode').value,brightness:+tr.querySelector('.brightness').value,period_ms:+tr.querySelector('.period').value,on_ms:+tr.querySelector('.on').value,off_ms:+tr.querySelector('.off').value}))}"
+    "async function load(){const r=await fetch('/api/notification-rules');const d=await r.json();presets=d.presets||[];$('rules').innerHTML=(d.rules||[]).map(row).join('');$('presets').innerHTML=presets.map(p=>`<tr><td>${p.label}</td><td>${p.app_id}</td></tr>`).join('');statusEl.textContent='已加载'}"
+    "$('save').onclick=async()=>{statusEl.textContent='保存中';const r=await fetch('/api/notification-rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rules:collect()})});statusEl.textContent=r.ok?'已保存':(await r.json()).error};"
+    "$('reset').onclick=async()=>{await fetch('/api/notification-rules/reset',{method:'POST'});await load();statusEl.textContent='已恢复默认'};"
+    "$('testLed').onclick=async()=>{await fetch('/api/led',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({color:$('testColor').value,mode:$('testMode').value})});statusEl.textContent='测试灯效已发送'};"
+    "load().catch(e=>statusEl.textContent=e.message);"
     "</script></body></html>";
 
 static esp_err_t send_json_error(httpd_req_t *req, const char *status, const char *message)
@@ -170,6 +167,9 @@ static void append_state_json(char *response, size_t response_size, const system
     cJSON_AddStringToObject(ancs, "title", snapshot->ancs_notification.title);
     cJSON_AddStringToObject(ancs, "subtitle", snapshot->ancs_notification.subtitle);
     cJSON_AddStringToObject(ancs, "message", snapshot->ancs_notification.message);
+    cJSON_AddNumberToObject(ancs, "category_id", snapshot->ancs_notification.category_id);
+    cJSON_AddBoolToObject(ancs, "rule_matched", snapshot->last_ancs_rule_matched);
+    cJSON_AddStringToObject(ancs, "rule_label", snapshot->last_ancs_rule_label);
     cJSON_AddItemToObject(root, "ancs", ancs);
 
     cJSON_AddStringToObject(root, "last_source",
@@ -291,6 +291,170 @@ static esp_err_t wifi_reset_post_handler(httpd_req_t *req)
     return send_json_error(req, "409 Conflict", "fixed wifi credentials are compiled in");
 }
 
+static esp_err_t rules_get_handler(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    char *json = NULL;
+    esp_err_t ret = ESP_OK;
+
+    if (root == NULL) {
+        return send_json_error(req, "500 Internal Server Error", "no memory");
+    }
+
+    notification_rules_add_json(root);
+    json = cJSON_PrintUnformatted(root);
+    if (json == NULL) {
+        cJSON_Delete(root);
+        return send_json_error(req, "500 Internal Server Error", "no memory");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    ret = httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+    cJSON_free(json);
+    cJSON_Delete(root);
+    return ret;
+}
+
+static char *read_request_body(httpd_req_t *req, size_t max_body_size)
+{
+    int remaining = req->content_len;
+    int offset = 0;
+    char *body;
+
+    if (remaining <= 0 || remaining > (int)max_body_size) {
+        return NULL;
+    }
+    body = malloc((size_t)remaining + 1);
+    if (body == NULL) {
+        return NULL;
+    }
+
+    while (remaining > 0) {
+        const int received = httpd_req_recv(req, body + offset, remaining);
+        if (received <= 0) {
+            free(body);
+            return NULL;
+        }
+        remaining -= received;
+        offset += received;
+    }
+    body[offset] = '\0';
+    return body;
+}
+
+static bool parse_rule_item(const cJSON *item, notification_rule_t *rule)
+{
+    const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(item, "enabled");
+    const cJSON *label = cJSON_GetObjectItemCaseSensitive(item, "label");
+    const cJSON *app_id = cJSON_GetObjectItemCaseSensitive(item, "app_id");
+    const cJSON *kind = cJSON_GetObjectItemCaseSensitive(item, "kind");
+    const cJSON *color = cJSON_GetObjectItemCaseSensitive(item, "color");
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(item, "mode");
+    const cJSON *brightness = cJSON_GetObjectItemCaseSensitive(item, "brightness");
+    const cJSON *period_ms = cJSON_GetObjectItemCaseSensitive(item, "period_ms");
+    const cJSON *on_ms = cJSON_GetObjectItemCaseSensitive(item, "on_ms");
+    const cJSON *off_ms = cJSON_GetObjectItemCaseSensitive(item, "off_ms");
+
+    if (rule == NULL || !cJSON_IsObject(item) || !cJSON_IsString(label) ||
+        !cJSON_IsString(app_id) || !cJSON_IsString(kind) || !cJSON_IsString(color) ||
+        !cJSON_IsString(mode)) {
+        return false;
+    }
+
+    memset(rule, 0, sizeof(*rule));
+    rule->enabled = enabled == NULL ? true : cJSON_IsTrue(enabled);
+    strlcpy(rule->label, label->valuestring, sizeof(rule->label));
+    strlcpy(rule->app_id, app_id->valuestring, sizeof(rule->app_id));
+
+    if (!notification_rules_parse_kind(kind->valuestring, &rule->kind) ||
+        !notification_rules_parse_color(color->valuestring, &rule->color_r,
+                                        &rule->color_g, &rule->color_b) ||
+        !notification_rules_parse_mode(mode->valuestring, &rule->mode)) {
+        return false;
+    }
+
+    rule->brightness = 100;
+    rule->period_ms = 2000;
+    rule->on_ms = 300;
+    rule->off_ms = 300;
+
+    if (brightness != NULL) {
+        if (!cJSON_IsNumber(brightness) || brightness->valueint < 0 ||
+            brightness->valueint > 100) {
+            return false;
+        }
+        rule->brightness = (uint8_t)brightness->valueint;
+    }
+    if (period_ms != NULL) {
+        if (!cJSON_IsNumber(period_ms) || period_ms->valueint <= 0) {
+            return false;
+        }
+        rule->period_ms = (uint32_t)period_ms->valueint;
+    }
+    if (on_ms != NULL) {
+        if (!cJSON_IsNumber(on_ms) || on_ms->valueint <= 0) {
+            return false;
+        }
+        rule->on_ms = (uint32_t)on_ms->valueint;
+    }
+    if (off_ms != NULL) {
+        if (!cJSON_IsNumber(off_ms) || off_ms->valueint <= 0) {
+            return false;
+        }
+        rule->off_ms = (uint32_t)off_ms->valueint;
+    }
+
+    return true;
+}
+
+static esp_err_t rules_post_handler(httpd_req_t *req)
+{
+    char *body;
+    notification_rule_t rules[NOTIFICATION_RULE_MAX_COUNT];
+    size_t rule_count = 0;
+
+    body = read_request_body(req, 8192);
+    if (body == NULL) {
+        return send_json_error(req, "400 Bad Request", "invalid request body");
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    free(body);
+    if (root == NULL) {
+        return send_json_error(req, "400 Bad Request", "invalid json");
+    }
+
+    const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "rules");
+    if (!cJSON_IsArray(items) || cJSON_GetArraySize(items) > NOTIFICATION_RULE_MAX_COUNT) {
+        cJSON_Delete(root);
+        return send_json_error(req, "400 Bad Request", "invalid rule list");
+    }
+
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, items) {
+        if (!parse_rule_item(item, &rules[rule_count])) {
+            cJSON_Delete(root);
+            return send_json_error(req, "400 Bad Request", "invalid rule item");
+        }
+        rule_count++;
+    }
+    cJSON_Delete(root);
+
+    if (notification_rules_set(rules, rule_count) != ESP_OK) {
+        return send_json_error(req, "500 Internal Server Error", "save rules failed");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+static esp_err_t rules_reset_post_handler(httpd_req_t *req)
+{
+    notification_rules_reset_defaults();
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 esp_err_t http_server_app_start(void)
 {
     if (s_server != NULL) {
@@ -326,12 +490,36 @@ esp_err_t http_server_app_start(void)
         .handler = wifi_reset_post_handler,
         .user_ctx = NULL,
     };
+    const httpd_uri_t rules_get_uri = {
+        .uri = "/api/notification-rules",
+        .method = HTTP_GET,
+        .handler = rules_get_handler,
+        .user_ctx = NULL,
+    };
+    const httpd_uri_t rules_post_uri = {
+        .uri = "/api/notification-rules",
+        .method = HTTP_POST,
+        .handler = rules_post_handler,
+        .user_ctx = NULL,
+    };
+    const httpd_uri_t rules_reset_uri = {
+        .uri = "/api/notification-rules/reset",
+        .method = HTTP_POST,
+        .handler = rules_reset_post_handler,
+        .user_ctx = NULL,
+    };
 
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &index_uri), TAG, "register / failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &led_uri), TAG, "register /api/led failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &state_uri), TAG, "register /api/state failed");
     ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &wifi_reset_uri), TAG,
                         "register /api/wifi/reset failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &rules_get_uri), TAG,
+                        "register GET /api/notification-rules failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &rules_post_uri), TAG,
+                        "register POST /api/notification-rules failed");
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(s_server, &rules_reset_uri), TAG,
+                        "register /api/notification-rules/reset failed");
 
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;

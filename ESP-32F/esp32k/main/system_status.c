@@ -20,6 +20,8 @@ static system_status_snapshot_t s_status = {
         .subtitle = "",
         .message = "",
     },
+    .last_ancs_rule_matched = false,
+    .last_ancs_rule_label = "",
     .led = {
         .color_r = 255,
         .color_g = 255,
@@ -129,6 +131,20 @@ void system_status_set_ancs_notification(const ancs_notification_event_t *event)
     }
 }
 
+void system_status_set_ancs_rule_result(bool matched, const char *label)
+{
+    if (s_status_mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
+        s_status.last_ancs_rule_matched = matched;
+        system_status_copy_string(s_status.last_ancs_rule_label,
+                                  sizeof(s_status.last_ancs_rule_label), label);
+        xSemaphoreGive(s_status_mutex);
+    }
+}
+
 void system_status_set_led_command(const led_command_t *command)
 {
     if (s_status_mutex == NULL || command == NULL) {
@@ -190,6 +206,8 @@ const char *system_status_control_source_to_string(control_source_t source)
         return "http";
     case CONTROL_SOURCE_BLE:
         return "ble";
+    case CONTROL_SOURCE_ANCS:
+        return "ancs";
     case CONTROL_SOURCE_NONE:
     default:
         return "none";

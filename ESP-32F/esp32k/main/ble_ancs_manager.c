@@ -19,6 +19,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "system_status.h"
 #include "notification_filter.h"
+#include "notification_rules.h"
 
 #define ANCS_DEVICE_NAME "George_ANCS"
 #define ANCS_MAX_DATA_SOURCE_LEN 1024
@@ -27,6 +28,7 @@
 #define ANCS_ATTR_MESSAGE_MAX_LEN 256
 #define ANCS_HID_SERVICE_UUID 0x1812
 #define ANCS_GENERIC_HID_APPEARANCE 0x03C0
+#define ANCS_PENDING_SOURCE_COUNT 4
 
 #define ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES 0
 #define ANCS_ATTRIBUTE_APP_IDENTIFIER 0
@@ -84,6 +86,8 @@ static uint8_t s_data_source_buffer[ANCS_MAX_DATA_SOURCE_LEN];
 static uint16_t s_data_source_len;
 static esp_timer_handle_t s_data_flush_timer;
 static bool s_started;
+static ancs_source_event_t s_pending_source_events[ANCS_PENDING_SOURCE_COUNT];
+static size_t s_next_pending_source_index;
 static const ble_uuid16_t HID_SERVICE_UUID = BLE_UUID16_INIT(ANCS_HID_SERVICE_UUID);
 
 static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg);
@@ -366,17 +370,42 @@ static void handle_notification_source(const uint8_t *data, size_t len)
              source_event.category_id);
 
     if (source_event.action == ANCS_EVENT_ADDED) {
+        s_pending_source_events[s_next_pending_source_index] = source_event;
+        s_next_pending_source_index =
+            (s_next_pending_source_index + 1) % ANCS_PENDING_SOURCE_COUNT;
         request_notification_attributes(source_event.notification_uid);
     }
+}
+
+static bool pop_pending_source_event(uint32_t notification_uid, ancs_source_event_t *source_event)
+{
+    for (size_t i = 0; i < ANCS_PENDING_SOURCE_COUNT; ++i) {
+        if (s_pending_source_events[i].notification_uid == notification_uid) {
+            if (source_event != NULL) {
+                *source_event = s_pending_source_events[i];
+            }
+            memset(&s_pending_source_events[i], 0, sizeof(s_pending_source_events[i]));
+            return true;
+        }
+    }
+    return false;
 }
 
 static void handle_data_source_packet(const uint8_t *data, size_t len)
 {
     ancs_notification_event_t event = {0};
+    ancs_source_event_t source_event = {0};
 
     if (!ancs_parse_notification_attributes(data, len, &event)) {
         ESP_LOGW(TAG, "parse notification attributes failed");
         return;
+    }
+
+    if (pop_pending_source_event(event.notification_uid, &source_event)) {
+        event.category_id = source_event.category_id;
+        event.category_count = source_event.category_count;
+        event.event_flags = source_event.event_flags;
+        event.action = source_event.action;
     }
 
     led_notify_type_t type = notification_filter_map_to_led_type(&event);
@@ -384,6 +413,9 @@ static void handle_data_source_packet(const uint8_t *data, size_t len)
              event.app_id, event.title, event.subtitle, event.message);
     ESP_LOGI(TAG, "[FILTER] type=%s", notification_filter_type_to_string(type));
     system_status_set_ancs_notification(&event);
+    if (notification_rules_apply_event(&event) == ESP_OK) {
+        ESP_LOGI(TAG, "[LED] applied notification rule");
+    }
 }
 
 static void flush_data_source_timer_cb(void *arg)
@@ -472,6 +504,8 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
         s_data_source_handle = 0;
         s_control_point_handle = 0;
         s_data_source_len = 0;
+        memset(s_pending_source_events, 0, sizeof(s_pending_source_events));
+        s_next_pending_source_index = 0;
         system_status_set_ble(true, false);
         set_ancs_state(ANCS_STATE_DISCONNECTED);
         advertise();
@@ -537,6 +571,7 @@ static void ble_ancs_on_sync(void)
         return;
     }
 
+    ESP_LOGI(TAG, "[BLE] host synced; starting advertising");
     advertise();
 }
 

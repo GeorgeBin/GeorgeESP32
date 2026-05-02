@@ -32,6 +32,9 @@ typedef struct {
     char title[ANCS_TITLE_MAX_LEN];
     char subtitle[ANCS_SUBTITLE_MAX_LEN];
     char message[ANCS_MESSAGE_MAX_LEN];
+    uint8_t category_id;
+    uint8_t category_count;
+    uint8_t event_flags;
     uint32_t received_time_ms;
 } ancs_notification_event_t;
 

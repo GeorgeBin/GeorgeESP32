@@ -6,6 +6,7 @@
 #include "http_server_app.h"
 #include "led_output.h"
 #include "message_center.h"
+#include "notification_rules.h"
 #include "system_status.h"
 #include "wifi_manager.h"
 
@@ -27,9 +28,14 @@ void app_main(void)
 
     ESP_ERROR_CHECK(message_center_init(1));
     ESP_ERROR_CHECK(system_status_init());
+    ESP_ERROR_CHECK(notification_rules_init());
     ESP_ERROR_CHECK(led_output_init(&default_command));
     ESP_ERROR_CHECK(message_center_submit(&default_command));
     ESP_ERROR_CHECK(display_service_init());
+
+    ESP_LOGI(TAG, "Starting ANCS BLE before Wi-Fi");
+    ESP_ERROR_CHECK(ble_ancs_manager_start());
+
     ESP_ERROR_CHECK(wifi_manager_init());
     ESP_ERROR_CHECK(wifi_manager_start_sta());
     if (!wifi_manager_wait_connected(15000)) {
@@ -39,6 +45,5 @@ void app_main(void)
         system_status_set_device_state(DEVICE_STATE_NORMAL_RUNNING);
     }
 
-    ESP_ERROR_CHECK(ble_ancs_manager_start());
     ESP_LOGI(TAG, "System ready");
 }
