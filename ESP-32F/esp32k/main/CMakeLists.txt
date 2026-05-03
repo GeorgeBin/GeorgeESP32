@@ -10,6 +10,9 @@ idf_component_register(
         "notification_rules.c"
         "wifi_manager.c"
         "http_server_app.c"
+        "device_config.c"
+        "recent_apps.c"
+        "phase_effect.c"
         "display_service.c"
         PRIV_REQUIRES spi_flash
         INCLUDE_DIRS "."

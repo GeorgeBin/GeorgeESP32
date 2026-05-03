@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "device_config.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -15,7 +16,7 @@
 #define RULES_NAMESPACE "notify_rules"
 #define RULES_KEY "rules"
 #define RULES_MAGIC 0x414E4353u
-#define RULES_VERSION 1u
+#define RULES_VERSION 2u
 #define ANCS_CATEGORY_INCOMING_CALL 1
 
 typedef struct {
@@ -77,24 +78,28 @@ static void copy_string(char *dest, size_t dest_size, const char *src)
 }
 
 static notification_rule_t make_rule(const char *label, const char *app_id,
-                                     notification_rule_kind_t kind,
+                                     uint8_t category,
                                      uint8_t red, uint8_t green, uint8_t blue,
                                      led_mode_t mode)
 {
     notification_rule_t rule = {
         .enabled = true,
-        .kind = kind,
+        .category = category,
+        .event_type = 0,
         .color_r = red,
         .color_g = green,
         .color_b = blue,
         .brightness = 100,
         .mode = mode,
+        .priority = 50,
         .period_ms = 2000,
         .on_ms = 300,
         .off_ms = 300,
+        .repeat = 1,
     };
     copy_string(rule.label, sizeof(rule.label), label);
     copy_string(rule.app_id, sizeof(rule.app_id), app_id);
+    rule.keyword[0] = '\0';
     return rule;
 }
 
@@ -102,41 +107,29 @@ static void load_defaults(void)
 {
     s_rule_count = 0;
     s_rules[s_rule_count++] = make_rule("Wechat Call", "com.tencent.xin",
-                                        NOTIFICATION_RULE_KIND_INCOMING_CALL,
-                                        0, 255, 0, LED_MODE_BLINK);
+                                        1, 0, 255, 0, LED_MODE_BLINK);
     s_rules[s_rule_count++] = make_rule("Wechat Message", "com.tencent.xin",
-                                        NOTIFICATION_RULE_KIND_MESSAGE,
-                                        0, 255, 0, LED_MODE_SOLID);
+                                        255, 0, 255, 0, LED_MODE_SOLID);
     s_rules[s_rule_count++] = make_rule("System Call", "",
-                                        NOTIFICATION_RULE_KIND_INCOMING_CALL,
-                                        255, 0, 0, LED_MODE_BLINK);
+                                        1, 255, 0, 0, LED_MODE_BLINK);
     s_rules[s_rule_count++] = make_rule("SMS", "com.apple.MobileSMS",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        0, 64, 255, LED_MODE_BLINK);
+                                        255, 0, 64, 255, LED_MODE_BLINK);
     s_rules[s_rule_count++] = make_rule("WeCom", "com.tencent.WeWork",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        0, 180, 255, LED_MODE_SOLID);
+                                        255, 0, 180, 255, LED_MODE_SOLID);
     s_rules[s_rule_count++] = make_rule("QQ", "com.tencent.mqq",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        0, 128, 255, LED_MODE_SOLID);
+                                        255, 0, 128, 255, LED_MODE_SOLID);
     s_rules[s_rule_count++] = make_rule("DingTalk", "com.laiwang.DingTalk",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        0, 64, 255, LED_MODE_BREATH);
+                                        255, 0, 64, 255, LED_MODE_BREATH);
     s_rules[s_rule_count++] = make_rule("Alipay", "com.alipay.iphoneclient",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        0, 160, 255, LED_MODE_SOLID);
+                                        255, 0, 160, 255, LED_MODE_SOLID);
     s_rules[s_rule_count++] = make_rule("Taobao", "com.taobao.taobao4iphone",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        255, 120, 0, LED_MODE_SOLID);
+                                        255, 255, 120, 0, LED_MODE_SOLID);
     s_rules[s_rule_count++] = make_rule("Douyin", "com.ss.iphone.ugc.Aweme",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        255, 255, 255, LED_MODE_BLINK);
+                                        255, 255, 255, 255, LED_MODE_BLINK);
     s_rules[s_rule_count++] = make_rule("Xiaohongshu", "com.xingin.discover",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        255, 0, 80, LED_MODE_SOLID);
+                                        255, 255, 0, 80, LED_MODE_SOLID);
     s_rules[s_rule_count++] = make_rule("Bilibili", "tv.danmaku.bilianime",
-                                        NOTIFICATION_RULE_KIND_ANY,
-                                        255, 80, 160, LED_MODE_SOLID);
+                                        255, 255, 80, 160, LED_MODE_SOLID);
 }
 
 static esp_err_t save_rules(void)
@@ -168,20 +161,56 @@ static esp_err_t save_rules(void)
     return ret;
 }
 
-static bool rule_kind_matches(notification_rule_kind_t kind, const ancs_notification_event_t *event)
+static bool rule_category_matches(uint8_t category, const ancs_notification_event_t *event)
 {
-    const bool incoming_call = event->category_id == ANCS_CATEGORY_INCOMING_CALL;
-
-    switch (kind) {
-    case NOTIFICATION_RULE_KIND_ANY:
+    if (category == 255) {
         return true;
-    case NOTIFICATION_RULE_KIND_INCOMING_CALL:
-        return incoming_call;
-    case NOTIFICATION_RULE_KIND_MESSAGE:
-        return !incoming_call;
-    default:
-        return false;
     }
+    return category == event->category_id;
+}
+
+static bool rule_event_type_matches(uint8_t event_type, const ancs_notification_event_t *event)
+{
+    if (event_type == 0) {
+        return true;
+    }
+    return event_type == (uint8_t)(event->action + 1);
+}
+
+static bool rule_keyword_matches(const char *keyword, const ancs_notification_event_t *event)
+{
+    if (keyword == NULL || keyword[0] == '\0') {
+        return true;
+    }
+    if (event->title[0] != '\0' && strstr(event->title, keyword) != NULL) {
+        return true;
+    }
+    if (event->message[0] != '\0' && strstr(event->message, keyword) != NULL) {
+        return true;
+    }
+    return false;
+}
+
+static void generate_rule_id(const char *label, char *id_buf, size_t buf_size)
+{
+    size_t j = 0;
+    for (size_t i = 0; label[i] != '\0' && j < buf_size - 1; ++i) {
+        char c = label[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = c - 'A' + 'a';
+        }
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            id_buf[j++] = c;
+        } else if (c == ' ' || c == '-') {
+            if (j == 0 || id_buf[j - 1] != '-') {
+                id_buf[j++] = '-';
+            }
+        }
+    }
+    if (j > 0 && id_buf[j - 1] == '-') {
+        j--;
+    }
+    id_buf[j] = '\0';
 }
 
 esp_err_t notification_rules_init(void)
@@ -211,7 +240,7 @@ esp_err_t notification_rules_init(void)
     nvs_close(handle);
     if (ret != ESP_OK || length != sizeof(*store) || store->magic != RULES_MAGIC ||
         store->version != RULES_VERSION || store->count > NOTIFICATION_RULE_MAX_COUNT) {
-        ESP_LOGI(TAG, "loading default notification rules");
+        ESP_LOGI(TAG, "loading default notification rules (version mismatch or invalid data)");
         load_defaults();
         free(store);
         return save_rules();
@@ -261,16 +290,35 @@ bool notification_rules_match_event(const ancs_notification_event_t *event,
         return false;
     }
 
+    const notification_rule_t *best_rule = NULL;
+    int best_priority = -1;
+
     for (size_t i = 0; i < s_rule_count; ++i) {
         const notification_rule_t *rule = &s_rules[i];
-        if (!rule->enabled || !rule_kind_matches(rule->kind, event)) {
+        if (!rule->enabled) {
+            continue;
+        }
+        if (!rule_category_matches(rule->category, event)) {
+            continue;
+        }
+        if (!rule_event_type_matches(rule->event_type, event)) {
             continue;
         }
         if (rule->app_id[0] != '\0' && strcmp(rule->app_id, event->app_id) != 0) {
             continue;
         }
+        if (!rule_keyword_matches(rule->keyword, event)) {
+            continue;
+        }
+        if ((int)rule->priority > best_priority) {
+            best_priority = (int)rule->priority;
+            best_rule = &s_rules[i];
+        }
+    }
+
+    if (best_rule != NULL) {
         if (matched_rule != NULL) {
-            *matched_rule = *rule;
+            *matched_rule = *best_rule;
         }
         return true;
     }
@@ -330,6 +378,13 @@ esp_err_t notification_rules_handle_removed(uint32_t notification_uid)
         ESP_LOGI(TAG, "removed ANCS uid matched, but LED source is %s; not turning off",
                  system_status_control_source_to_string(snapshot.last_source));
         return ESP_ERR_INVALID_STATE;
+    }
+
+    device_config_t cfg;
+    if (device_config_get(&cfg) == ESP_OK && cfg.clear_behavior == 1) {
+        ESP_LOGI(TAG, "removed active ANCS notification uid=%" PRIu32 "; keeping LED on (clear_behavior=keep)",
+                 notification_uid);
+        return ESP_OK;
     }
 
     const led_command_t command = {
@@ -403,11 +458,11 @@ bool notification_rules_parse_mode(const char *mode_str, led_mode_t *mode)
         *mode = LED_MODE_SOLID;
         return true;
     }
-    if (strcmp(mode_str, "breath") == 0) {
+    if (strcmp(mode_str, "breath") == 0 || strcmp(mode_str, "pulse") == 0) {
         *mode = LED_MODE_BREATH;
         return true;
     }
-    if (strcmp(mode_str, "blink") == 0) {
+    if (strcmp(mode_str, "blink") == 0 || strcmp(mode_str, "rainbow") == 0) {
         *mode = LED_MODE_BLINK;
         return true;
     }
@@ -430,37 +485,137 @@ const char *notification_rules_mode_to_string(led_mode_t mode)
     }
 }
 
-bool notification_rules_parse_kind(const char *kind_str, notification_rule_kind_t *kind)
+bool notification_rules_parse_category(const char *str, uint8_t *category)
 {
-    if (kind_str == NULL || kind == NULL) {
+    if (str == NULL || category == NULL) {
         return false;
     }
-    if (strcmp(kind_str, "any") == 0) {
-        *kind = NOTIFICATION_RULE_KIND_ANY;
+    if (strcmp(str, "any") == 0) {
+        *category = 255;
         return true;
     }
-    if (strcmp(kind_str, "message") == 0) {
-        *kind = NOTIFICATION_RULE_KIND_MESSAGE;
+    if (strcmp(str, "other") == 0) {
+        *category = 0;
         return true;
     }
-    if (strcmp(kind_str, "incoming_call") == 0) {
-        *kind = NOTIFICATION_RULE_KIND_INCOMING_CALL;
+    if (strcmp(str, "incoming_call") == 0) {
+        *category = 1;
+        return true;
+    }
+    if (strcmp(str, "missed_call") == 0) {
+        *category = 2;
+        return true;
+    }
+    if (strcmp(str, "voicemail") == 0) {
+        *category = 3;
+        return true;
+    }
+    if (strcmp(str, "social") == 0) {
+        *category = 4;
+        return true;
+    }
+    if (strcmp(str, "schedule") == 0) {
+        *category = 5;
+        return true;
+    }
+    if (strcmp(str, "email") == 0) {
+        *category = 6;
+        return true;
+    }
+    if (strcmp(str, "news") == 0) {
+        *category = 7;
+        return true;
+    }
+    if (strcmp(str, "health_fitness") == 0) {
+        *category = 8;
+        return true;
+    }
+    if (strcmp(str, "business_finance") == 0) {
+        *category = 9;
+        return true;
+    }
+    if (strcmp(str, "location") == 0) {
+        *category = 10;
+        return true;
+    }
+    if (strcmp(str, "entertainment") == 0) {
+        *category = 11;
         return true;
     }
     return false;
 }
 
-const char *notification_rules_kind_to_string(notification_rule_kind_t kind)
+const char *notification_rules_category_to_string(uint8_t category)
 {
-    switch (kind) {
-    case NOTIFICATION_RULE_KIND_ANY:
+    switch (category) {
+    case 255:
         return "any";
-    case NOTIFICATION_RULE_KIND_MESSAGE:
-        return "message";
-    case NOTIFICATION_RULE_KIND_INCOMING_CALL:
+    case 0:
+        return "other";
+    case 1:
         return "incoming_call";
+    case 2:
+        return "missed_call";
+    case 3:
+        return "voicemail";
+    case 4:
+        return "social";
+    case 5:
+        return "schedule";
+    case 6:
+        return "email";
+    case 7:
+        return "news";
+    case 8:
+        return "health_fitness";
+    case 9:
+        return "business_finance";
+    case 10:
+        return "location";
+    case 11:
+        return "entertainment";
     default:
-        return "unknown";
+        return "any";
+    }
+}
+
+bool notification_rules_parse_event_type(const char *str, uint8_t *event_type)
+{
+    if (str == NULL || event_type == NULL) {
+        return false;
+    }
+    if (strcmp(str, "any") == 0) {
+        *event_type = 0;
+        return true;
+    }
+    if (strcmp(str, "added") == 0) {
+        *event_type = 1;
+        return true;
+    }
+    if (strcmp(str, "modified") == 0) {
+        *event_type = 2;
+        return true;
+    }
+    if (strcmp(str, "removed") == 0) {
+        *event_type = 3;
+        return true;
+    }
+    return false;
+}
+
+const char *notification_rules_event_type_to_string(uint8_t event_type)
+{
+    switch (event_type) {
+    case 0:
+        return "any";
+    case 1:
+        return "added";
+    case 2:
+        return "modified";
+    case 3:
+        return "removed";
+    default:
+        return "any";
     }
 }
 
@@ -471,22 +626,42 @@ void notification_rules_add_json(cJSON *root)
 
     for (size_t i = 0; rules != NULL && i < s_rule_count; ++i) {
         char color[8];
+        char id[32];
         cJSON *item = cJSON_CreateObject();
-        if (item == NULL) {
+        cJSON *match = cJSON_CreateObject();
+        cJSON *led = cJSON_CreateObject();
+        if (item == NULL || match == NULL || led == NULL) {
+            cJSON_Delete(item);
+            cJSON_Delete(match);
+            cJSON_Delete(led);
             continue;
         }
+
         snprintf(color, sizeof(color), "#%02X%02X%02X",
                  s_rules[i].color_r, s_rules[i].color_g, s_rules[i].color_b);
+        generate_rule_id(s_rules[i].label, id, sizeof(id));
+
+        cJSON_AddStringToObject(item, "id", id);
+        cJSON_AddStringToObject(item, "name", s_rules[i].label);
         cJSON_AddBoolToObject(item, "enabled", s_rules[i].enabled);
-        cJSON_AddStringToObject(item, "label", s_rules[i].label);
-        cJSON_AddStringToObject(item, "app_id", s_rules[i].app_id);
-        cJSON_AddStringToObject(item, "kind", notification_rules_kind_to_string(s_rules[i].kind));
-        cJSON_AddStringToObject(item, "color", color);
-        cJSON_AddStringToObject(item, "mode", notification_rules_mode_to_string(s_rules[i].mode));
-        cJSON_AddNumberToObject(item, "brightness", s_rules[i].brightness);
-        cJSON_AddNumberToObject(item, "period_ms", s_rules[i].period_ms);
-        cJSON_AddNumberToObject(item, "on_ms", s_rules[i].on_ms);
-        cJSON_AddNumberToObject(item, "off_ms", s_rules[i].off_ms);
+        cJSON_AddNumberToObject(item, "priority", s_rules[i].priority);
+
+        cJSON_AddStringToObject(match, "appId", s_rules[i].app_id);
+        cJSON_AddStringToObject(match, "category",
+                                notification_rules_category_to_string(s_rules[i].category));
+        cJSON_AddStringToObject(match, "eventType",
+                                notification_rules_event_type_to_string(s_rules[i].event_type));
+        cJSON_AddStringToObject(match, "keyword", s_rules[i].keyword);
+        cJSON_AddItemToObject(item, "match", match);
+
+        cJSON_AddStringToObject(led, "color", color);
+        cJSON_AddStringToObject(led, "mode",
+                                notification_rules_mode_to_string(s_rules[i].mode));
+        cJSON_AddNumberToObject(led, "brightness", s_rules[i].brightness);
+        cJSON_AddNumberToObject(led, "durationMs", s_rules[i].period_ms);
+        cJSON_AddNumberToObject(led, "repeat", s_rules[i].repeat);
+        cJSON_AddItemToObject(item, "led", led);
+
         cJSON_AddItemToArray(rules, item);
     }
 
@@ -499,4 +674,17 @@ void notification_rules_add_json(cJSON *root)
         cJSON_AddStringToObject(item, "app_id", APP_PRESETS[i].app_id);
         cJSON_AddItemToArray(presets, item);
     }
+}
+
+const char *notification_rules_get_preset_label(const char *app_id)
+{
+    if (app_id == NULL) {
+        return NULL;
+    }
+    for (size_t i = 0; i < sizeof(APP_PRESETS) / sizeof(APP_PRESETS[0]); ++i) {
+        if (strcmp(APP_PRESETS[i].app_id, app_id) == 0) {
+            return APP_PRESETS[i].label;
+        }
+    }
+    return NULL;
 }

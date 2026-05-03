@@ -2,11 +2,13 @@
 #include "esp_log.h"
 
 #include "ble_ancs_manager.h"
+#include "device_config.h"
 #include "display_service.h"
 #include "http_server_app.h"
 #include "led_output.h"
 #include "message_center.h"
 #include "notification_rules.h"
+#include "recent_apps.h"
 #include "system_status.h"
 #include "wifi_manager.h"
 
@@ -28,7 +30,9 @@ void app_main(void)
 
     ESP_ERROR_CHECK(message_center_init(1));
     ESP_ERROR_CHECK(system_status_init());
+    ESP_ERROR_CHECK(device_config_init());
     ESP_ERROR_CHECK(notification_rules_init());
+    ESP_ERROR_CHECK(recent_apps_init());
     ESP_ERROR_CHECK(led_output_init(&default_command));
     ESP_ERROR_CHECK(message_center_submit(&default_command));
     ESP_ERROR_CHECK(display_service_init());

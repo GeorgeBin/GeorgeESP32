@@ -21,6 +21,8 @@
 #include "system_status.h"
 #include "notification_filter.h"
 #include "notification_rules.h"
+#include "device_config.h"
+#include "recent_apps.h"
 
 #define ANCS_DEVICE_NAME "George_ANCS"
 #define ANCS_MAX_DATA_SOURCE_LEN 1024
@@ -761,6 +763,26 @@ static void handle_data_source_packet(const uint8_t *data, size_t len)
         event.event_flags = source_event.event_flags;
         event.action = source_event.action;
     }
+
+    device_config_t cfg;
+    if (device_config_get(&cfg) == ESP_OK) {
+        if (cfg.privacy_mode == 0) {
+            event.title[0] = '\0';
+            event.subtitle[0] = '\0';
+            event.message[0] = '\0';
+        } else if (cfg.privacy_mode == 1) {
+            event.subtitle[0] = '\0';
+            event.message[0] = '\0';
+        }
+    }
+
+    const char *event_type_str = "added";
+    if (event.action == 1) {
+        event_type_str = "modified";
+    } else if (event.action == 2) {
+        event_type_str = "removed";
+    }
+    recent_apps_add(event.app_id, event.category_id, event_type_str, event.title);
 
     led_notify_type_t type = notification_filter_map_to_led_type(&event);
     ESP_LOGI(TAG, "[ANCS] detail: app_id=%s title=%s subtitle=%s message=%s",

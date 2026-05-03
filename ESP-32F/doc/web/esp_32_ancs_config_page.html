@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>George Light · ANCS 配置</title>
+  <style>
+    :root {
+      --bg: #f5f7f8;
+      --card: #ffffff;
+      --text: #162026;
+      --muted: #6b7a86;
+      --line: #dbe3e8;
+      --primary: #1fb7a6;
+      --primary-dark: #129987;
+      --danger: #d94a4a;
+      --warn: #f0a92e;
+      --ok: #22a06b;
+      --shadow: 0 10px 28px rgba(22, 32, 38, .08);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(circle at top left, #e8fffb 0, #f5f7f8 38%, #eef2f4 100%);
+      color: var(--text);
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(16px);
+      background: rgba(245, 247, 248, .82);
+      border-bottom: 1px solid rgba(219, 227, 232, .8);
+    }
+
+    .bar {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 16px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #79ffe1, #1fb7a6);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.55), 0 8px 22px rgba(31,183,166,.22);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .brand p {
+      margin: 2px 0 0;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.78);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--warn);
+    }
+    .dot.ok { background: var(--ok); }
+    .dot.bad { background: var(--danger); }
+
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px 16px 48px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 16px;
+    }
+
+    .card {
+      background: rgba(255,255,255,.9);
+      border: 1px solid rgba(219, 227, 232, .95);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .card-head {
+      padding: 16px 16px 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .card h2 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .card .desc {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .body { padding: 0 16px 16px; }
+
+    .status-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .status-item {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fbfcfd;
+    }
+
+    .status-item label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .status-item strong {
+      font-size: 14px;
+    }
+
+    .rule {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 13px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .swatch {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 1px solid rgba(0,0,0,.08);
+      box-shadow: inset 0 0 0 4px rgba(255,255,255,.45);
+    }
+
+    .rule-title {
+      margin: 0;
+      font-weight: 650;
+      font-size: 14px;
+    }
+
+    .rule-sub {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-all;
+    }
+
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    button, .button {
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight: 650;
+      background: var(--primary);
+      color: white;
+      cursor: pointer;
+      box-shadow: 0 8px 18px rgba(31,183,166,.2);
+    }
+
+    button.secondary {
+      background: #edf4f5;
+      color: var(--text);
+      box-shadow: none;
+      border: 1px solid var(--line);
+    }
+
+    button.danger {
+      background: #fff0f0;
+      color: var(--danger);
+      box-shadow: none;
+      border: 1px solid #ffd5d5;
+    }
+
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .field { display: grid; gap: 6px; }
+    .field.full { grid-column: 1 / -1; }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 11px 12px;
+      font: inherit;
+      background: #fbfcfd;
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(31,183,166,.12);
+    }
+
+    input[type="color"] {
+      padding: 4px;
+      height: 44px;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin: 8px 0 0;
+    }
+
+    .recent {
+      display: grid;
+      gap: 8px;
+    }
+
+    .recent-item {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #fbfcfd;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .recent-item p {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .recent-item span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      word-break: break-all;
+    }
+
+    .footer-actions {
+      position: sticky;
+      bottom: 0;
+      margin-top: 16px;
+      padding: 12px;
+      border: 1px solid rgba(219, 227, 232, .9);
+      border-radius: 18px;
+      background: rgba(255,255,255,.86);
+      backdrop-filter: blur(14px);
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      box-shadow: var(--shadow);
+    }
+
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 22px;
+      transform: translateX(-50%);
+      padding: 11px 14px;
+      border-radius: 999px;
+      background: rgba(22,32,38,.92);
+      color: white;
+      font-size: 13px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(-4px);
+    }
+
+    @media (max-width: 760px) {
+      .grid { grid-template-columns: 1fr; }
+      .status-list { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
+      .bar { align-items: flex-start; }
+      .pill { display: none; }
+      .footer-actions { justify-content: stretch; }
+      .footer-actions button { flex: 1; }
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"></div>
+      <div>
+        <h1>George Light ANCS 配置</h1>
+        <p>iPhone 通知 → App/分类匹配 → LED 灯效</p>
+      </div>
+    </div>
+    <div class="pill"><span id="connDot" class="dot"></span><span id="connText">读取设备状态中</span></div>
+  </div>
+</header>
+
+<main>
+  <section class="grid">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>设备状态</h2>
+          <p class="desc">用于确认当前是否已连接 iPhone、是否已获得 ANCS 授权。</p>
+        </div>
+        <button class="secondary" onclick="loadAll()">刷新</button>
+      </div>
+      <div class="body">
+        <div class="status-list">
+          <div class="status-item"><label>BLE 连接</label><strong id="bleStatus">--</strong></div>
+          <div class="status-item"><label>ANCS 授权</label><strong id="ancsStatus">--</strong></div>
+          <div class="status-item"><label>配置模式</label><strong id="wifiStatus">--</strong></div>
+          <div class="status-item"><label>规则数量</label><strong id="ruleCount">--</strong></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>全局设置</h2>
+          <p class="desc">建议默认不保存通知正文，只保存 App ID 和分类，降低隐私风险。</p>
+        </div>
+      </div>
+      <div class="body form-grid">
+        <div class="field">
+          <label for="deviceName">设备名称</label>
+          <input id="deviceName" placeholder="George Light" />
+        </div>
+        <div class="field">
+          <label for="defaultBrightness">默认亮度</label>
+          <input id="defaultBrightness" type="number" min="1" max="100" value="60" />
+        </div>
+        <div class="field">
+          <label for="privacyMode">隐私模式</label>
+          <select id="privacyMode">
+            <option value="app_only">仅记录 App ID/分类</option>
+            <option value="title_only">允许临时显示标题</option>
+            <option value="full">允许临时使用标题和内容</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="clearBehavior">通知移除后</label>
+          <select id="clearBehavior">
+            <option value="restore">恢复默认灯效</option>
+            <option value="off">关闭 LED</option>
+            <option value="keep">保持当前灯效</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid" style="margin-top:16px;">
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>通知规则</h2>
+          <p class="desc">优先级越大越先匹配。建议优先使用 App ID，其次使用 ANCS 分类。</p>
+        </div>
+        <button onclick="newRule()">新增规则</button>
+      </div>
+      <div class="body" id="rules"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>最近收到的 App</h2>
+          <p class="desc">设备收到 ANCS 通知后，会把最近 App ID 放到这里，点击即可生成规则。</p>
+        </div>
+      </div>
+      <div class="body">
+        <div id="recent" class="recent"></div>
+        <p class="hint">提示：iOS App ID 以设备实际收到为准，不建议在固件里写死常见 App ID。</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-top:16px;">
+    <div class="card-head">
+      <div>
+        <h2 id="editorTitle">新增/编辑规则</h2>
+        <p class="desc">规则可以按 App ID、ANCS 分类、事件类型和关键字匹配。关键字匹配依赖设备是否读取标题/正文。</p>
+      </div>
+    </div>
+    <div class="body form-grid">
+      <input id="ruleId" type="hidden" />
+      <div class="field">
+        <label for="ruleName">规则名称</label>
+        <input id="ruleName" placeholder="例如：微信消息" />
+      </div>
+      <div class="field">
+        <label for="ruleEnabled">启用状态</label>
+        <select id="ruleEnabled">
+          <option value="true">启用</option>
+          <option value="false">停用</option>
+        </select>
+      </div>
+      <div class="field full">
+        <label for="appId">App Identifier</label>
+        <input id="appId" placeholder="例如：com.tencent.xin；留空表示不按 App 匹配" />
+      </div>
+      <div class="field">
+        <label for="category">ANCS 分类</label>
+        <select id="category">
+          <option value="any">任意分类</option>
+          <option value="other">Other</option>
+          <option value="incoming_call">Incoming Call</option>
+          <option value="missed_call">Missed Call</option>
+          <option value="voicemail">Voicemail</option>
+          <option value="social">Social</option>
+          <option value="schedule">Schedule</option>
+          <option value="email">Email</option>
+          <option value="news">News</option>
+          <option value="health_fitness">Health & Fitness</option>
+          <option value="business_finance">Business & Finance</option>
+          <option value="location">Location</option>
+          <option value="entertainment">Entertainment</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="eventType">事件类型</label>
+        <select id="eventType">
+          <option value="added">新增通知</option>
+          <option value="modified">通知更新</option>
+          <option value="removed">通知移除</option>
+          <option value="any">任意事件</option>
+        </select>
+      </div>
+      <div class="field full">
+        <label for="keyword">标题/内容关键字，可选</label>
+        <input id="keyword" placeholder="例如：报警、会议、验证码；留空表示不按关键字匹配" />
+      </div>
+      <div class="field">
+        <label for="color">颜色</label>
+        <input id="color" type="color" value="#1fb7a6" />
+      </div>
+      <div class="field">
+        <label for="mode">灯效模式</label>
+        <select id="mode">
+          <option value="solid">常亮</option>
+          <option value="breath">呼吸</option>
+          <option value="blink">闪烁</option>
+          <option value="pulse">脉冲</option>
+          <option value="rainbow">彩虹</option>
+          <option value="off">关闭</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="brightness">亮度 1-100</label>
+        <input id="brightness" type="number" min="1" max="100" value="60" />
+      </div>
+      <div class="field">
+        <label for="durationMs">持续时间 ms</label>
+        <input id="durationMs" type="number" min="500" step="500" value="8000" />
+      </div>
+      <div class="field">
+        <label for="priority">优先级</label>
+        <input id="priority" type="number" min="0" max="100" value="50" />
+      </div>
+      <div class="field">
+        <label for="repeat">重复次数</label>
+        <input id="repeat" type="number" min="0" max="99" value="1" />
+      </div>
+      <div class="field full actions">
+        <button onclick="saveRuleFromEditor()">保存规则</button>
+        <button class="secondary" onclick="testRuleFromEditor()">测试灯效</button>
+        <button class="danger" onclick="clearEditor()">清空</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer-actions">
+    <button class="secondary" onclick="loadAll()">重新读取</button>
+    <button onclick="saveConfig()">保存到设备</button>
+  </div>
+</main>
+
+<div id="toast" class="toast"></div>
+
+<script>
+  const API = {
+    status: '/api/status',
+    config: '/api/config',
+    test: '/api/rules/test'
+  };
+
+  const fallbackConfig = {
+    version: 1,
+    deviceName: 'George Light',
+    defaultBrightness: 60,
+    privacyMode: 'app_only',
+    clearBehavior: 'restore',
+    rules: [
+      {
+        id: 'wechat', name: '微信消息', enabled: true, priority: 80,
+        match: { appId: 'com.tencent.xin', category: 'social', eventType: 'added', keyword: '' },
+        led: { color: '#21c45d', mode: 'breath', brightness: 70, durationMs: 8000, repeat: 1 }
+      },
+      {
+        id: 'incoming-call', name: '电话呼入', enabled: true, priority: 95,
+        match: { appId: '', category: 'incoming_call', eventType: 'added', keyword: '' },
+        led: { color: '#ff3b30', mode: 'blink', brightness: 90, durationMs: 15000, repeat: 8 }
+      }
+    ],
+    recentApps: [
+      { appId: 'com.tencent.xin', displayName: '微信', category: 'social', lastSeen: '刚刚' },
+      { appId: 'com.apple.mobilephone', displayName: '电话', category: 'incoming_call', lastSeen: '最近' }
+    ]
+  };
+
+  let config = structuredClone(fallbackConfig);
+
+  function $(id) { return document.getElementById(id); }
+
+  function toast(msg) {
+    const el = $('toast');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 1800);
+  }
+
+  async function requestJson(url, options) {
+    const res = await fetch(url, options);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.json();
+  }
+
+  async function loadAll() {
+    try {
+      const status = await requestJson(API.status);
+      renderStatus(status);
+    } catch (e) {
+      renderStatus({ bleConnected: false, ancsAuthorized: false, configMode: true });
+    }
+
+    try {
+      config = await requestJson(API.config);
+    } catch (e) {
+      config = structuredClone(fallbackConfig);
+      toast('使用页面内置示例数据');
+    }
+    renderConfig();
+  }
+
+  function renderStatus(status) {
+    $('bleStatus').textContent = status.bleConnected ? '已连接 iPhone' : '未连接';
+    $('ancsStatus').textContent = status.ancsAuthorized ? '已授权' : '未授权/未知';
+    $('wifiStatus').textContent = status.configMode ? 'AP 配置中' : '已关闭';
+
+    const dot = $('connDot');
+    dot.className = 'dot ' + (status.bleConnected && status.ancsAuthorized ? 'ok' : '');
+    $('connText').textContent = status.bleConnected ? '设备在线' : '配置页面可用';
+  }
+
+  function renderConfig() {
+    $('deviceName').value = config.deviceName || '';
+    $('defaultBrightness').value = config.defaultBrightness || 60;
+    $('privacyMode').value = config.privacyMode || 'app_only';
+    $('clearBehavior').value = config.clearBehavior || 'restore';
+    $('ruleCount').textContent = (config.rules || []).length + ' 条';
+    renderRules();
+    renderRecent();
+  }
+
+  function renderRules() {
+    const box = $('rules');
+    const rules = [...(config.rules || [])].sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    if (!rules.length) {
+      box.innerHTML = '<p class="hint">暂无规则。建议先从“最近收到的 App”中添加。</p>';
+      return;
+    }
+    box.innerHTML = rules.map(rule => `
+      <div class="rule">
+        <div class="swatch" style="background:${rule.led.color}"></div>
+        <div>
+          <p class="rule-title">${escapeHtml(rule.name)} ${rule.enabled ? '' : '· 已停用'}</p>
+          <p class="rule-sub">优先级 ${rule.priority || 0} · ${escapeHtml(rule.match.appId || '任意 App')} · ${escapeHtml(rule.match.category || 'any')} · ${escapeHtml(rule.led.mode)} · ${escapeHtml(String(rule.led.durationMs || 0))}ms</p>
+        </div>
+        <div class="actions">
+          <button class="secondary" onclick="editRule('${rule.id}')">编辑</button>
+          <button class="danger" onclick="deleteRule('${rule.id}')">删除</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderRecent() {
+    const box = $('recent');
+    const items = config.recentApps || [];
+    if (!items.length) {
+      box.innerHTML = '<p class="hint">暂无记录。iPhone 收到通知后刷新此页面。</p>';
+      return;
+    }
+    box.innerHTML = items.map(item => `
+      <div class="recent-item">
+        <div>
+          <p>${escapeHtml(item.displayName || item.appId)}</p>
+          <span>${escapeHtml(item.appId)} · ${escapeHtml(item.category || 'unknown')} · ${escapeHtml(item.lastSeen || '')}</span>
+        </div>
+        <button class="secondary" onclick="createFromRecent('${escapeAttr(item.appId)}','${escapeAttr(item.displayName || item.appId)}','${escapeAttr(item.category || 'any')}')">添加</button>
+      </div>
+    `).join('');
+  }
+
+  function collectGlobal() {
+    config.deviceName = $('deviceName').value.trim();
+    config.defaultBrightness = numberValue('defaultBrightness', 60);
+    config.privacyMode = $('privacyMode').value;
+    config.clearBehavior = $('clearBehavior').value;
+  }
+
+  async function saveConfig() {
+    collectGlobal();
+    try {
+      await requestJson(API.config, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      toast('已保存到设备');
+    } catch (e) {
+      console.warn(e);
+      toast('保存失败：设备接口不可用');
+    }
+  }
+
+  function newRule() {
+    clearEditor();
+    $('editorTitle').textContent = '新增规则';
+  }
+
+  function editRule(id) {
+    const r = (config.rules || []).find(x => x.id === id);
+    if (!r) return;
+    $('editorTitle').textContent = '编辑规则：' + r.name;
+    $('ruleId').value = r.id;
+    $('ruleName').value = r.name || '';
+    $('ruleEnabled').value = String(r.enabled !== false);
+    $('appId').value = r.match.appId || '';
+    $('category').value = r.match.category || 'any';
+    $('eventType').value = r.match.eventType || 'added';
+    $('keyword').value = r.match.keyword || '';
+    $('color').value = r.led.color || '#1fb7a6';
+    $('mode').value = r.led.mode || 'breath';
+    $('brightness').value = r.led.brightness || 60;
+    $('durationMs').value = r.led.durationMs || 8000;
+    $('priority').value = r.priority || 50;
+    $('repeat').value = r.led.repeat || 1;
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  }
+
+  function clearEditor() {
+    $('ruleId').value = '';
+    $('ruleName').value = '';
+    $('ruleEnabled').value = 'true';
+    $('appId').value = '';
+    $('category').value = 'any';
+    $('eventType').value = 'added';
+    $('keyword').value = '';
+    $('color').value = '#1fb7a6';
+    $('mode').value = 'breath';
+    $('brightness').value = config.defaultBrightness || 60;
+    $('durationMs').value = 8000;
+    $('priority').value = 50;
+    $('repeat').value = 1;
+  }
+
+  function saveRuleFromEditor() {
+    const id = $('ruleId').value || makeId();
+    const name = $('ruleName').value.trim() || '未命名规则';
+    const rule = {
+      id,
+      name,
+      enabled: $('ruleEnabled').value === 'true',
+      priority: numberValue('priority', 50),
+      match: {
+        appId: $('appId').value.trim(),
+        category: $('category').value,
+        eventType: $('eventType').value,
+        keyword: $('keyword').value.trim()
+      },
+      led: {
+        color: $('color').value,
+        mode: $('mode').value,
+        brightness: numberValue('brightness', 60),
+        durationMs: numberValue('durationMs', 8000),
+        repeat: numberValue('repeat', 1)
+      }
+    };
+
+    const idx = (config.rules || []).findIndex(x => x.id === id);
+    if (idx >= 0) config.rules[idx] = rule;
+    else config.rules.push(rule);
+    renderRules();
+    $('ruleCount').textContent = config.rules.length + ' 条';
+    toast('规则已更新，记得保存到设备');
+  }
+
+  async function testRuleFromEditor() {
+    const testPayload = {
+      color: $('color').value,
+      mode: $('mode').value,
+      brightness: numberValue('brightness', 60),
+      durationMs: numberValue('durationMs', 3000),
+      repeat: numberValue('repeat', 1)
+    };
+    try {
+      await requestJson(API.test, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(testPayload)
+      });
+      toast('已发送测试灯效');
+    } catch (e) {
+      toast('测试失败：设备接口不可用');
+    }
+  }
+
+  function deleteRule(id) {
+    config.rules = (config.rules || []).filter(x => x.id !== id);
+    renderRules();
+    $('ruleCount').textContent = config.rules.length + ' 条';
+    toast('已删除，记得保存到设备');
+  }
+
+  function createFromRecent(appId, displayName, category) {
+    clearEditor();
+    $('ruleName').value = displayName + ' 通知';
+    $('appId').value = appId;
+    $('category').value = category || 'any';
+    $('priority').value = 70;
+    $('mode').value = 'breath';
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  }
+
+  function numberValue(id, fallback) {
+    const n = Number($(id).value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function makeId() {
+    return 'rule-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+  }
+
+  function escapeAttr(str) {
+    return escapeHtml(str).replace(/`/g, '&#96;');
+  }
+
+  loadAll();
+</script>
+</body>
+</html>

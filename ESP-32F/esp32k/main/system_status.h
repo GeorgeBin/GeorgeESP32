@@ -3,7 +3,6 @@
 #include <stdbool.h>
 
 #include "ancs_notification_parser.h"
-#include "esp_err.h"
 #include "message_center.h"
 
 typedef enum {
@@ -32,6 +31,8 @@ typedef struct {
     control_source_t last_source;
     int last_result_code;
     char last_result_msg[32];
+    bool test_override_active;
+    char led_source_string[32];
 } system_status_snapshot_t;
 
 esp_err_t system_status_init(void);
@@ -43,6 +44,8 @@ void system_status_set_ancs_notification(const ancs_notification_event_t *event)
 void system_status_set_ancs_rule_result(bool matched, const char *label);
 void system_status_set_led_command(const led_command_t *command);
 void system_status_set_last_result(int code, const char *msg);
+void system_status_set_test_override(bool active);
+void system_status_set_led_source(const char *source);
 void system_status_get_snapshot(system_status_snapshot_t *snapshot);
 const char *system_status_led_mode_to_string(led_mode_t mode);
 const char *system_status_control_source_to_string(control_source_t source);

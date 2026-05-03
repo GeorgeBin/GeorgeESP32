@@ -36,6 +36,8 @@ static system_status_snapshot_t s_status = {
     .last_source = CONTROL_SOURCE_NONE,
     .last_result_code = 0,
     .last_result_msg = "ok",
+    .test_override_active = false,
+    .led_source_string = "standby",
 };
 
 static void system_status_copy_string(char *dest, size_t dest_size, const char *src)
@@ -167,6 +169,31 @@ void system_status_set_last_result(int code, const char *msg)
     if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
         s_status.last_result_code = code;
         system_status_copy_string(s_status.last_result_msg, sizeof(s_status.last_result_msg), msg);
+        xSemaphoreGive(s_status_mutex);
+    }
+}
+
+void system_status_set_test_override(bool active)
+{
+    if (s_status_mutex == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
+        s_status.test_override_active = active;
+        xSemaphoreGive(s_status_mutex);
+    }
+}
+
+void system_status_set_led_source(const char *source)
+{
+    if (s_status_mutex == NULL || source == NULL) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_status_mutex, portMAX_DELAY) == pdTRUE) {
+        system_status_copy_string(s_status.led_source_string,
+                                  sizeof(s_status.led_source_string), source);
         xSemaphoreGive(s_status_mutex);
     }
 }

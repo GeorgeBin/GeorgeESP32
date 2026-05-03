@@ -12,26 +12,25 @@
 #define NOTIFICATION_RULE_MAX_COUNT 16
 #define NOTIFICATION_RULE_LABEL_LEN 32
 #define NOTIFICATION_RULE_APP_ID_LEN 64
-
-typedef enum {
-    NOTIFICATION_RULE_KIND_ANY = 0,
-    NOTIFICATION_RULE_KIND_MESSAGE,
-    NOTIFICATION_RULE_KIND_INCOMING_CALL,
-} notification_rule_kind_t;
+#define NOTIFICATION_RULE_KEYWORD_LEN 64
 
 typedef struct {
     bool enabled;
     char label[NOTIFICATION_RULE_LABEL_LEN];
     char app_id[NOTIFICATION_RULE_APP_ID_LEN];
-    notification_rule_kind_t kind;
+    uint8_t category;
+    uint8_t event_type;
+    char keyword[NOTIFICATION_RULE_KEYWORD_LEN];
     uint8_t color_r;
     uint8_t color_g;
     uint8_t color_b;
     uint8_t brightness;
     led_mode_t mode;
+    uint8_t priority;
     uint32_t period_ms;
     uint32_t on_ms;
     uint32_t off_ms;
+    uint8_t repeat;
 } notification_rule_t;
 
 esp_err_t notification_rules_init(void);
@@ -46,6 +45,9 @@ void notification_rules_clear_active(void);
 bool notification_rules_parse_color(const char *text, uint8_t *red, uint8_t *green, uint8_t *blue);
 bool notification_rules_parse_mode(const char *mode_str, led_mode_t *mode);
 const char *notification_rules_mode_to_string(led_mode_t mode);
-bool notification_rules_parse_kind(const char *kind_str, notification_rule_kind_t *kind);
-const char *notification_rules_kind_to_string(notification_rule_kind_t kind);
+bool notification_rules_parse_category(const char *str, uint8_t *category);
+const char *notification_rules_category_to_string(uint8_t category);
+bool notification_rules_parse_event_type(const char *str, uint8_t *event_type);
+const char *notification_rules_event_type_to_string(uint8_t event_type);
 void notification_rules_add_json(cJSON *root);
+const char *notification_rules_get_preset_label(const char *app_id);
