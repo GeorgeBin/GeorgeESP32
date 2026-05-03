@@ -272,6 +272,7 @@ static esp_err_t parse_config_body(const char *body, device_config_t *cfg,
             rules[idx].period_ms = 2000;
             rules[idx].on_ms = 300;
             rules[idx].off_ms = 300;
+            rules[idx].duration_ms = 8000;
             rules[idx].repeat = 1;
 
             const cJSON *name = cJSON_GetObjectItemCaseSensitive(item, "name");
@@ -333,9 +334,10 @@ static esp_err_t parse_config_body(const char *body, device_config_t *cfg,
                     int b = brightness->valueint;
                     rules[idx].brightness = (uint8_t)((b < 0) ? 0 : (b > 100) ? 100 : b);
                 }
-                if (cJSON_IsNumber(durationMs) && durationMs->valueint > 0) {
-                    rules[idx].period_ms = (uint32_t)durationMs->valueint;
-                } else if (cJSON_IsNumber(periodMs) && periodMs->valueint > 0) {
+                if (cJSON_IsNumber(durationMs) && durationMs->valueint >= 0) {
+                    rules[idx].duration_ms = (uint32_t)durationMs->valueint;
+                }
+                if (cJSON_IsNumber(periodMs) && periodMs->valueint > 0) {
                     rules[idx].period_ms = (uint32_t)periodMs->valueint;
                 }
                 if (cJSON_IsNumber(repeat)) {
@@ -392,6 +394,15 @@ static esp_err_t config_put_handler(httpd_req_t *req)
     notification_rule_t rules[NOTIFICATION_RULE_MAX_COUNT];
     size_t rule_count = 0;
 
+    if (device_config_get(&cfg) != ESP_OK) {
+        free(body);
+        return send_json_error(req, "500 Internal Server Error", "failed to load current device config");
+    }
+    if (notification_rules_get(rules, NOTIFICATION_RULE_MAX_COUNT, &rule_count) != ESP_OK) {
+        free(body);
+        return send_json_error(req, "500 Internal Server Error", "failed to load current rules");
+    }
+
     esp_err_t ret = parse_config_body(body, &cfg, rules, &rule_count);
     free(body);
 
@@ -442,6 +453,8 @@ static esp_err_t rules_test_post_handler(httpd_req_t *req)
     command.period_ms = 2000;
     command.on_ms = 300;
     command.off_ms = 300;
+    command.duration_ms = 0;
+    command.repeat = 0;
 
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     if (!cJSON_IsString(mode) || !parse_led_mode(mode->valuestring, &command.mode)) {
@@ -469,6 +482,15 @@ static esp_err_t rules_test_post_handler(httpd_req_t *req)
     if (periodMs != NULL && cJSON_IsNumber(periodMs) && periodMs->valueint > 0) {
         command.period_ms = (uint32_t)periodMs->valueint;
     }
+    const cJSON *durationMs = cJSON_GetObjectItemCaseSensitive(root, "durationMs");
+    if (durationMs != NULL && cJSON_IsNumber(durationMs) && durationMs->valueint >= 0) {
+        command.duration_ms = (uint32_t)durationMs->valueint;
+    }
+    const cJSON *repeat = cJSON_GetObjectItemCaseSensitive(root, "repeat");
+    if (repeat != NULL && cJSON_IsNumber(repeat)) {
+        int r = repeat->valueint;
+        command.repeat = (uint8_t)((r < 0) ? 0 : (r > 99) ? 99 : r);
+    }
     const cJSON *onMs = cJSON_GetObjectItemCaseSensitive(root, "onMs");
     if (onMs != NULL && cJSON_IsNumber(onMs) && onMs->valueint > 0) {
         command.on_ms = (uint32_t)onMs->valueint;
@@ -484,7 +506,6 @@ static esp_err_t rules_test_post_handler(httpd_req_t *req)
         return send_json_error(req, "500 Internal Server Error", "failed to queue LED command");
     }
 
-    system_status_set_led_command(&command);
     system_status_set_test_override(true);
     system_status_set_led_source("test_override");
     system_status_set_last_result(0, "ok");
@@ -628,7 +649,6 @@ static esp_err_t led_post_handler(httpd_req_t *req)
         return send_json_error(req, "500 Internal Server Error", "failed to queue LED command");
     }
 
-    system_status_set_led_command(&command);
     system_status_set_last_result(0, "ok");
 
     char response[128];

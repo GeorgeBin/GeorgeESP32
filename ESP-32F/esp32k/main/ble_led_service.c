@@ -137,6 +137,8 @@ static void command_defaults(led_command_t *command)
     command->period_ms = 2000;
     command->on_ms = 500;
     command->off_ms = 500;
+    command->duration_ms = 0;
+    command->repeat = 0;
     command->source = CONTROL_SOURCE_BLE;
 }
 
@@ -270,8 +272,6 @@ static void handle_command_json(const char *json)
             if (message_center_submit(&command) != ESP_OK) {
                 code = BLE_LED_ERR_CONTROL;
                 msg = "led control failed";
-            } else {
-                system_status_set_led_command(&command);
             }
         }
     } else if (strcmp(cmd->valuestring, "get_state") == 0) {

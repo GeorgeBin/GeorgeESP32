@@ -8,7 +8,9 @@
 
 #include "device_config.h"
 #include "esp_check.h"
+#include "esp_err.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "system_status.h"
@@ -16,8 +18,9 @@
 #define RULES_NAMESPACE "notify_rules"
 #define RULES_KEY "rules"
 #define RULES_MAGIC 0x414E4353u
-#define RULES_VERSION 2u
+#define RULES_VERSION 3u
 #define ANCS_CATEGORY_INCOMING_CALL 1
+#define DEFAULT_RULE_DURATION_MS 8000
 
 typedef struct {
     uint32_t magic;
@@ -36,6 +39,7 @@ static notification_rule_t s_rules[NOTIFICATION_RULE_MAX_COUNT];
 static size_t s_rule_count;
 static uint32_t s_active_led_notification_uid;
 static bool s_has_active_led_notification;
+static esp_timer_handle_t s_restore_timer;
 
 static const app_preset_t APP_PRESETS[] = {
     {"Wechat", "com.tencent.xin"},
@@ -77,6 +81,93 @@ static void copy_string(char *dest, size_t dest_size, const char *src)
     dest[dest_size - 1] = '\0';
 }
 
+static led_command_t command_from_phase_effect(const phase_effect_t *effect)
+{
+    led_command_t command = {
+        .color_r = effect->color_r,
+        .color_g = effect->color_g,
+        .color_b = effect->color_b,
+        .brightness = effect->brightness,
+        .mode = effect->mode,
+        .period_ms = effect->duration_ms > 0 ? effect->duration_ms : 2000,
+        .on_ms = 300,
+        .off_ms = 300,
+        .duration_ms = effect->duration_ms,
+        .repeat = effect->repeat,
+        .source = CONTROL_SOURCE_ANCS,
+    };
+    return command;
+}
+
+static led_command_t off_command(void)
+{
+    const led_command_t command = {
+        .color_r = 0,
+        .color_g = 0,
+        .color_b = 0,
+        .brightness = 0,
+        .mode = LED_MODE_OFF,
+        .period_ms = 0,
+        .on_ms = 0,
+        .off_ms = 0,
+        .duration_ms = 0,
+        .repeat = 0,
+        .source = CONTROL_SOURCE_ANCS,
+    };
+    return command;
+}
+
+static esp_err_t submit_clear_behavior_command(const char *reason)
+{
+    device_config_t cfg;
+    if (device_config_get(&cfg) != ESP_OK) {
+        led_command_t command = off_command();
+        ESP_LOGW(TAG, "%s; config unavailable, turning LED off", reason);
+        return message_center_submit(&command);
+    }
+
+    if (cfg.clear_behavior == 1) {
+        ESP_LOGI(TAG, "%s; keeping LED on", reason);
+        return ESP_OK;
+    }
+
+    led_command_t command = cfg.clear_behavior == 2 ? off_command() : command_from_phase_effect(&cfg.phase_standby);
+    ESP_LOGI(TAG, "%s; applying clear_behavior=%u", reason, cfg.clear_behavior);
+    return message_center_submit(&command);
+}
+
+static void stop_restore_timer(void)
+{
+    if (s_restore_timer != NULL) {
+        esp_timer_stop(s_restore_timer);
+    }
+}
+
+static void restore_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_has_active_led_notification) {
+        return;
+    }
+
+    s_has_active_led_notification = false;
+    s_active_led_notification_uid = 0;
+    (void)submit_clear_behavior_command("ANCS rule duration expired");
+}
+
+static void schedule_restore_timer(const notification_rule_t *rule)
+{
+    if (rule == NULL || rule->duration_ms == 0 || s_restore_timer == NULL) {
+        return;
+    }
+
+    stop_restore_timer();
+    esp_err_t ret = esp_timer_start_once(s_restore_timer, (uint64_t)rule->duration_ms * 1000);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "start ANCS restore timer failed: %s", esp_err_to_name(ret));
+    }
+}
+
 static notification_rule_t make_rule(const char *label, const char *app_id,
                                      uint8_t category,
                                      uint8_t red, uint8_t green, uint8_t blue,
@@ -95,6 +186,7 @@ static notification_rule_t make_rule(const char *label, const char *app_id,
         .period_ms = 2000,
         .on_ms = 300,
         .off_ms = 300,
+        .duration_ms = DEFAULT_RULE_DURATION_MS,
         .repeat = 1,
     };
     copy_string(rule.label, sizeof(rule.label), label);
@@ -182,11 +274,29 @@ static bool rule_keyword_matches(const char *keyword, const ancs_notification_ev
     if (keyword == NULL || keyword[0] == '\0') {
         return true;
     }
-    if (event->title[0] != '\0' && strstr(event->title, keyword) != NULL) {
-        return true;
-    }
-    if (event->message[0] != '\0' && strstr(event->message, keyword) != NULL) {
-        return true;
+
+    const char *start = keyword;
+    while (*start != '\0') {
+        const char *end = strchr(start, '|');
+        const size_t len = end != NULL ? (size_t)(end - start) : strlen(start);
+        if (len > 0 && len < NOTIFICATION_RULE_KEYWORD_LEN) {
+            char token[NOTIFICATION_RULE_KEYWORD_LEN];
+            memcpy(token, start, len);
+            token[len] = '\0';
+            if (event->title[0] != '\0' && strstr(event->title, token) != NULL) {
+                return true;
+            }
+            if (event->subtitle[0] != '\0' && strstr(event->subtitle, token) != NULL) {
+                return true;
+            }
+            if (event->message[0] != '\0' && strstr(event->message, token) != NULL) {
+                return true;
+            }
+        }
+        if (end == NULL) {
+            break;
+        }
+        start = end + 1;
     }
     return false;
 }
@@ -215,6 +325,10 @@ static void generate_rule_id(const char *label, char *id_buf, size_t buf_size)
 
 esp_err_t notification_rules_init(void)
 {
+    const esp_timer_create_args_t restore_timer_args = {
+        .callback = restore_timer_cb,
+        .name = "ancs_restore",
+    };
     nvs_handle_t handle;
     notification_rules_store_t *store = calloc(1, sizeof(*store));
     if (store == NULL) {
@@ -227,6 +341,15 @@ esp_err_t notification_rules_init(void)
         free(store);
         ESP_LOGE(TAG, "nvs init failed: %s", esp_err_to_name(ret));
         return ret;
+    }
+
+    if (s_restore_timer == NULL) {
+        ret = esp_timer_create(&restore_timer_args, &s_restore_timer);
+        if (ret != ESP_OK) {
+            free(store);
+            ESP_LOGE(TAG, "restore timer create failed: %s", esp_err_to_name(ret));
+            return ret;
+        }
     }
 
     ret = nvs_open(RULES_NAMESPACE, NVS_READWRITE, &handle);
@@ -346,6 +469,8 @@ esp_err_t notification_rules_apply_event(const ancs_notification_event_t *event)
         .period_ms = rule.period_ms,
         .on_ms = rule.on_ms,
         .off_ms = rule.off_ms,
+        .duration_ms = rule.duration_ms,
+        .repeat = rule.repeat,
         .source = CONTROL_SOURCE_ANCS,
     };
 
@@ -355,6 +480,7 @@ esp_err_t notification_rules_apply_event(const ancs_notification_event_t *event)
     if (ret == ESP_OK) {
         s_active_led_notification_uid = event->notification_uid;
         s_has_active_led_notification = true;
+        schedule_restore_timer(&rule);
         ESP_LOGI(TAG, "active ANCS LED notification uid=%" PRIu32,
                  s_active_led_notification_uid);
     }
@@ -373,6 +499,7 @@ esp_err_t notification_rules_handle_removed(uint32_t notification_uid)
     system_status_get_snapshot(&snapshot);
     s_has_active_led_notification = false;
     s_active_led_notification_uid = 0;
+    stop_restore_timer();
 
     if (snapshot.last_source != CONTROL_SOURCE_ANCS) {
         ESP_LOGI(TAG, "removed ANCS uid matched, but LED source is %s; not turning off",
@@ -380,28 +507,8 @@ esp_err_t notification_rules_handle_removed(uint32_t notification_uid)
         return ESP_ERR_INVALID_STATE;
     }
 
-    device_config_t cfg;
-    if (device_config_get(&cfg) == ESP_OK && cfg.clear_behavior == 1) {
-        ESP_LOGI(TAG, "removed active ANCS notification uid=%" PRIu32 "; keeping LED on (clear_behavior=keep)",
-                 notification_uid);
-        return ESP_OK;
-    }
-
-    const led_command_t command = {
-        .color_r = 0,
-        .color_g = 0,
-        .color_b = 0,
-        .brightness = 0,
-        .mode = LED_MODE_OFF,
-        .period_ms = 0,
-        .on_ms = 0,
-        .off_ms = 0,
-        .source = CONTROL_SOURCE_ANCS,
-    };
-
-    ESP_LOGI(TAG, "removed active ANCS notification uid=%" PRIu32 "; turning LED off",
-             notification_uid);
-    return message_center_submit(&command);
+    ESP_LOGI(TAG, "removed active ANCS notification uid=%" PRIu32, notification_uid);
+    return submit_clear_behavior_command("active ANCS notification removed");
 }
 
 void notification_rules_clear_active(void)
@@ -412,6 +519,7 @@ void notification_rules_clear_active(void)
     }
     s_has_active_led_notification = false;
     s_active_led_notification_uid = 0;
+    stop_restore_timer();
 }
 
 bool notification_rules_parse_color(const char *text, uint8_t *red, uint8_t *green, uint8_t *blue)
@@ -658,7 +766,10 @@ void notification_rules_add_json(cJSON *root)
         cJSON_AddStringToObject(led, "mode",
                                 notification_rules_mode_to_string(s_rules[i].mode));
         cJSON_AddNumberToObject(led, "brightness", s_rules[i].brightness);
-        cJSON_AddNumberToObject(led, "durationMs", s_rules[i].period_ms);
+        cJSON_AddNumberToObject(led, "durationMs", s_rules[i].duration_ms);
+        cJSON_AddNumberToObject(led, "periodMs", s_rules[i].period_ms);
+        cJSON_AddNumberToObject(led, "onMs", s_rules[i].on_ms);
+        cJSON_AddNumberToObject(led, "offMs", s_rules[i].off_ms);
         cJSON_AddNumberToObject(led, "repeat", s_rules[i].repeat);
         cJSON_AddItemToObject(item, "led", led);
 

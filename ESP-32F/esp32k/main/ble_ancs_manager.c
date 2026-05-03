@@ -758,10 +758,7 @@ static void handle_data_source_packet(const uint8_t *data, size_t len)
     }
 
     if (pop_pending_source_event(event.notification_uid, &source_event)) {
-        event.category_id = source_event.category_id;
-        event.category_count = source_event.category_count;
-        event.event_flags = source_event.event_flags;
-        event.action = source_event.action;
+        ancs_apply_source_event(&event, &source_event);
     }
 
     device_config_t cfg;

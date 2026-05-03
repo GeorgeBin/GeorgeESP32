@@ -30,6 +30,7 @@ typedef struct {
     uint32_t period_ms;
     uint32_t on_ms;
     uint32_t off_ms;
+    uint32_t duration_ms;
     uint8_t repeat;
 } notification_rule_t;
 

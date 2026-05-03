@@ -41,4 +41,5 @@ typedef struct {
 bool ancs_parse_notification_source(const uint8_t *data, size_t len, ancs_source_event_t *event);
 bool ancs_parse_notification_attributes(const uint8_t *data, size_t len,
                                         ancs_notification_event_t *event);
+void ancs_apply_source_event(ancs_notification_event_t *event, const ancs_source_event_t *source_event);
 const char *ancs_event_action_to_string(ancs_event_action_t action);

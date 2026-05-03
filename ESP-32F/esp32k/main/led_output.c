@@ -76,6 +76,7 @@ static void led_output_task(void *arg)
     int brightness = BREATH_MIN_BRIGHTNESS;
     int8_t breath_step = 1;
     bool blink_on = true;
+    uint8_t blink_completed = 0;
     TickType_t last_wake = xTaskGetTickCount();
 
     led_output_apply_scaled(&command, 255);
@@ -88,6 +89,7 @@ static void led_output_task(void *arg)
             brightness = BREATH_MIN_BRIGHTNESS;
             breath_step = 1;
             blink_on = true;
+            blink_completed = 0;
             last_wake = xTaskGetTickCount();
             ESP_LOGI(TAG, "Applying new command: rgb=(%u,%u,%u) brightness=%u mode=%d source=%d",
                      command.color_r, command.color_g, command.color_b, command.brightness,
@@ -140,6 +142,14 @@ static void led_output_task(void *arg)
             const uint32_t delay_ms = blink_on ?
                                       (command.on_ms > 0 ? command.on_ms : DEFAULT_BLINK_ON_MS) :
                                       (command.off_ms > 0 ? command.off_ms : DEFAULT_BLINK_OFF_MS);
+            if (!blink_on && command.repeat > 0) {
+                blink_completed++;
+                if (blink_completed >= command.repeat) {
+                    led_output_apply_scaled(&command, 0);
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    break;
+                }
+            }
             blink_on = !blink_on;
             vTaskDelay(pdMS_TO_TICKS(delay_ms));
             break;

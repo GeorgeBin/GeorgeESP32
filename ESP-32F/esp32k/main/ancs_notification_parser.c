@@ -108,6 +108,17 @@ bool ancs_parse_notification_attributes(const uint8_t *data, size_t len,
     return true;
 }
 
+void ancs_apply_source_event(ancs_notification_event_t *event, const ancs_source_event_t *source_event)
+{
+    if (event == NULL || source_event == NULL) {
+        return;
+    }
+    event->category_id = source_event->category_id;
+    event->category_count = source_event->category_count;
+    event->event_flags = source_event->event_flags;
+    event->action = source_event->action;
+}
+
 const char *ancs_event_action_to_string(ancs_event_action_t action)
 {
     switch (action) {
