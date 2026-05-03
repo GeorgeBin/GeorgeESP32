@@ -12,6 +12,7 @@
 #include "host/ble_store.h"
 #include "host/ble_uuid.h"
 #include "host/util/util.h"
+#include "message_center.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nvs_flash.h"
@@ -30,6 +31,8 @@
 #define ANCS_GENERIC_HID_APPEARANCE 0x03C0
 #define ANCS_PENDING_SOURCE_COUNT 4
 #define ANCS_DIRECTED_ADV_DURATION_MS 3000
+#define ANCS_CONNECTED_LED_DURATION_MS 1400
+#define ANCS_RESTART_ADV_DELAY_MS 100
 
 #define ANCS_COMMAND_GET_NOTIFICATION_ATTRIBUTES 0
 #define ANCS_ATTRIBUTE_APP_IDENTIFIER 0
@@ -94,8 +97,12 @@ static uint16_t s_mtu_size = 23;
 static uint8_t s_data_source_buffer[ANCS_MAX_DATA_SOURCE_LEN];
 static uint16_t s_data_source_len;
 static esp_timer_handle_t s_data_flush_timer;
+static esp_timer_handle_t s_connected_led_timer;
+static esp_timer_handle_t s_advertise_timer;
 static bool s_started;
 static bool s_directed_advertising;
+static bool s_ancs_service_found;
+static ancs_state_t s_ancs_state = ANCS_STATE_IDLE;
 static ancs_subscribe_target_t s_active_subscribe_target;
 static uint16_t s_active_cccd_handle;
 static ancs_source_event_t s_pending_source_events[ANCS_PENDING_SOURCE_COUNT];
@@ -118,6 +125,10 @@ static const ancs_attribute_request_t ATTRIBUTE_REQUESTS[] = {
     {ANCS_ATTRIBUTE_SUBTITLE, ANCS_ATTR_SUBTITLE_MAX_LEN},
     {ANCS_ATTRIBUTE_MESSAGE, ANCS_ATTR_MESSAGE_MAX_LEN},
 };
+
+static void submit_ancs_ready_standby_led(void);
+static void advertise(void);
+static void schedule_advertise(void);
 
 static const char *ancs_state_to_string(ancs_state_t state)
 {
@@ -160,12 +171,73 @@ static const char *ancs_state_to_string(ancs_state_t state)
 
 static void set_ancs_state(ancs_state_t state)
 {
+    s_ancs_state = state;
     ESP_LOGI(TAG, "[ANCS] state: %s", ancs_state_to_string(state));
     if (state == ANCS_STATE_READY) {
         system_status_set_ancs_connected(true);
+        if (s_connected_led_timer != NULL) {
+            esp_timer_stop(s_connected_led_timer);
+        }
+        submit_ancs_ready_standby_led();
     } else if (state == ANCS_STATE_DISCONNECTED || state == ANCS_STATE_ERROR) {
         system_status_set_ancs_connected(false);
     }
+}
+
+static void submit_led_command(const led_command_t *command, const char *context)
+{
+    esp_err_t ret = message_center_submit(command);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "%s LED command failed: %s", context, esp_err_to_name(ret));
+    }
+}
+
+static void submit_disconnected_led(void)
+{
+    const led_command_t command = {
+        .color_r = 255,
+        .color_g = 255,
+        .color_b = 255,
+        .brightness = 12,
+        .mode = LED_MODE_BLINK,
+        .period_ms = 3000,
+        .on_ms = 120,
+        .off_ms = 2880,
+        .source = CONTROL_SOURCE_ANCS,
+    };
+    submit_led_command(&command, "disconnected");
+}
+
+static void submit_ble_connected_led(void)
+{
+    const led_command_t command = {
+        .color_r = 0,
+        .color_g = 64,
+        .color_b = 255,
+        .brightness = 70,
+        .mode = LED_MODE_BREATH,
+        .period_ms = ANCS_CONNECTED_LED_DURATION_MS,
+        .on_ms = 0,
+        .off_ms = 0,
+        .source = CONTROL_SOURCE_ANCS,
+    };
+    submit_led_command(&command, "connected");
+}
+
+static void submit_ancs_ready_standby_led(void)
+{
+    const led_command_t command = {
+        .color_r = 0,
+        .color_g = 0,
+        .color_b = 0,
+        .brightness = 0,
+        .mode = LED_MODE_OFF,
+        .period_ms = 0,
+        .on_ms = 0,
+        .off_ms = 0,
+        .source = CONTROL_SOURCE_ANCS,
+    };
+    submit_led_command(&command, "ready standby");
 }
 
 static esp_err_t init_nvs_once(void)
@@ -183,7 +255,15 @@ static esp_err_t init_nvs_once(void)
 
 static void reset_connection_state(void)
 {
+    if (s_data_flush_timer != NULL) {
+        esp_timer_stop(s_data_flush_timer);
+    }
+    if (s_connected_led_timer != NULL) {
+        esp_timer_stop(s_connected_led_timer);
+    }
+    notification_rules_clear_active();
     s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    s_ancs_service_found = false;
     s_service_end_handle = 0;
     s_notification_source_def_handle = 0;
     s_notification_source_handle = 0;
@@ -191,10 +271,57 @@ static void reset_connection_state(void)
     s_data_source_handle = 0;
     s_control_point_def_handle = 0;
     s_control_point_handle = 0;
+    s_mtu_size = 23;
     s_data_source_len = 0;
+    s_active_subscribe_target = ANCS_SUBSCRIBE_NOTIFICATION_SOURCE;
     s_active_cccd_handle = 0;
     memset(s_pending_source_events, 0, sizeof(s_pending_source_events));
     s_next_pending_source_index = 0;
+}
+
+static void connected_led_timer_cb(void *arg)
+{
+    (void)arg;
+    esp_timer_stop(s_connected_led_timer);
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE && s_ancs_state != ANCS_STATE_READY) {
+        submit_disconnected_led();
+    }
+}
+
+static void show_ble_connected_led_once(void)
+{
+    submit_ble_connected_led();
+    if (s_connected_led_timer != NULL) {
+        esp_timer_stop(s_connected_led_timer);
+        esp_err_t ret = esp_timer_start_once(s_connected_led_timer,
+                                             ANCS_CONNECTED_LED_DURATION_MS * 1000);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "start connected LED timer failed: %s", esp_err_to_name(ret));
+        }
+    }
+}
+
+static void advertise_timer_cb(void *arg)
+{
+    (void)arg;
+    esp_timer_stop(s_advertise_timer);
+    advertise();
+}
+
+static void schedule_advertise(void)
+{
+    if (s_advertise_timer == NULL) {
+        advertise();
+        return;
+    }
+
+    esp_timer_stop(s_advertise_timer);
+    esp_err_t ret = esp_timer_start_once(s_advertise_timer,
+                                         ANCS_RESTART_ADV_DELAY_MS * 1000);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "schedule advertising failed: %s", esp_err_to_name(ret));
+        advertise();
+    }
 }
 
 static uint16_t descriptor_end_handle(uint16_t value_handle)
@@ -215,12 +342,19 @@ static uint16_t descriptor_end_handle(uint16_t value_handle)
     return end_handle;
 }
 
-static void advertise_to_peer(const ble_addr_t *peer_addr)
+static bool advertise_to_peer(const ble_addr_t *peer_addr)
 {
     struct ble_gap_adv_params adv_params = {0};
     struct ble_hs_adv_fields fields = {0};
     struct ble_hs_adv_fields rsp_fields = {0};
     const char *name = ble_svc_gap_device_name();
+
+    if (ble_gap_adv_active()) {
+        system_status_set_ble(true, false);
+        set_ancs_state(ANCS_STATE_ADVERTISING);
+        ESP_LOGI(TAG, "[BLE] advertising already active");
+        return true;
+    }
 
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.tx_pwr_lvl_is_present = 1;
@@ -235,18 +369,20 @@ static void advertise_to_peer(const ble_addr_t *peer_addr)
     if (rc != 0) {
         ESP_LOGE(TAG, "set advertising fields failed: %d", rc);
         set_ancs_state(ANCS_STATE_ERROR);
-        return;
+        return false;
     }
 
     rsp_fields.name = (const uint8_t *)name;
     rsp_fields.name_len = strlen(name);
     rsp_fields.name_is_complete = 1;
+    rsp_fields.sol_uuids128 = &APPLE_NC_UUID;
+    rsp_fields.sol_num_uuids128 = 1;
 
     rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
     if (rc != 0) {
         ESP_LOGE(TAG, "set scan response fields failed: %d", rc);
         set_ancs_state(ANCS_STATE_ERROR);
-        return;
+        return false;
     }
 
     if (peer_addr != NULL) {
@@ -265,9 +401,20 @@ static void advertise_to_peer(const ble_addr_t *peer_addr)
                            &adv_params,
                            ble_ancs_gap_event, NULL);
     if (rc != 0) {
-        ESP_LOGE(TAG, "start advertising failed: %d", rc);
-        set_ancs_state(ANCS_STATE_ERROR);
-        return;
+        if (rc == BLE_HS_EBUSY && ble_gap_adv_active()) {
+            system_status_set_ble(true, false);
+            set_ancs_state(ANCS_STATE_ADVERTISING);
+            ESP_LOGI(TAG, "[BLE] advertising already active after start rc=%d", rc);
+            return true;
+        }
+        if (peer_addr != NULL) {
+            ESP_LOGW(TAG, "start directed advertising failed: %d", rc);
+            s_directed_advertising = false;
+        } else {
+            ESP_LOGE(TAG, "start advertising failed: %d", rc);
+            set_ancs_state(ANCS_STATE_ERROR);
+        }
+        return false;
     }
 
     system_status_set_ble(true, false);
@@ -277,39 +424,43 @@ static void advertise_to_peer(const ble_addr_t *peer_addr)
     } else {
         ESP_LOGI(TAG, "[BLE] advertising started as %s", name);
     }
-}
-
-static bool advertise_to_bonded_peer(void)
-{
-    ble_addr_t peer_addr = {0};
-    int peer_count = 0;
-    const int rc = ble_store_util_bonded_peers(&peer_addr, &peer_count, 1);
-
-    if (rc != 0 || peer_count == 0) {
-        ESP_LOGI(TAG, "[BLE] no bonded peer; starting general advertising");
-        return false;
-    }
-
-    ESP_LOGI(TAG, "[BLE] bonded peer found; starting directed advertising");
-    advertise_to_peer(&peer_addr);
     return true;
-}
-
-static void reconnect_or_advertise(void)
-{
-    if (!advertise_to_bonded_peer()) {
-        advertise_to_peer(NULL);
-    }
 }
 
 static void advertise(void)
 {
-    advertise_to_peer(NULL);
+    if (!advertise_to_peer(NULL)) {
+        ESP_LOGW(TAG, "[BLE] general advertising failed; waiting for next GAP recovery event");
+    }
+}
+
+static void reconnect_or_advertise(void)
+{
+    schedule_advertise();
+}
+
+static bool is_current_connection(uint16_t conn_handle, const char *context)
+{
+    if (conn_handle == s_conn_handle && s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        return true;
+    }
+    ESP_LOGW(TAG, "%s from stale conn_handle=%u current=%u; ignoring",
+             context, conn_handle, s_conn_handle);
+    return false;
+}
+
+static int recover_from_ancs_error(uint16_t conn_handle, const char *context, int status)
+{
+    ESP_LOGW(TAG, "%s failed: status=%d", context, status);
+    set_ancs_state(ANCS_STATE_ERROR);
+    (void)conn_handle;
+    return status;
 }
 
 static int subscribe_characteristic(ancs_subscribe_target_t target)
 {
     uint16_t value_handle = 0;
+    int rc;
 
     if (target == ANCS_SUBSCRIBE_NOTIFICATION_SOURCE) {
         value_handle = s_notification_source_handle;
@@ -321,30 +472,35 @@ static int subscribe_characteristic(ancs_subscribe_target_t target)
 
     s_active_subscribe_target = target;
     s_active_cccd_handle = 0;
-    return ble_gattc_disc_all_dscs(s_conn_handle, value_handle, descriptor_end_handle(value_handle),
-                                   descriptor_discovered_cb, (void *)(uintptr_t)target);
+    rc = ble_gattc_disc_all_dscs(s_conn_handle, value_handle, descriptor_end_handle(value_handle),
+                                 descriptor_discovered_cb, (void *)(uintptr_t)target);
+    if (rc != 0) {
+        return recover_from_ancs_error(s_conn_handle, "descriptor discovery start", rc);
+    }
+    return 0;
 }
 
 static int subscribe_complete_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                                  struct ble_gatt_attr *attr, void *arg)
 {
-    (void)conn_handle;
     (void)attr;
+
+    if (!is_current_connection(conn_handle, "subscribe complete")) {
+        return 0;
+    }
 
     const ancs_subscribe_target_t target = (ancs_subscribe_target_t)(uintptr_t)arg;
     if (error->status != 0) {
-        ESP_LOGE(TAG, "subscribe failed: status=%d", error->status);
-        set_ancs_state(ANCS_STATE_ERROR);
-        return error->status;
+        return recover_from_ancs_error(conn_handle, "subscribe", error->status);
     }
 
-    if (target == ANCS_SUBSCRIBE_NOTIFICATION_SOURCE) {
-        ESP_LOGI(TAG, "[ANCS] notification source subscribed");
-        set_ancs_state(ANCS_STATE_NOTIFICATION_SOURCE_SUBSCRIBED);
-        return subscribe_characteristic(ANCS_SUBSCRIBE_DATA_SOURCE);
-    } else {
+    if (target == ANCS_SUBSCRIBE_DATA_SOURCE) {
         ESP_LOGI(TAG, "[ANCS] data source subscribed");
         set_ancs_state(ANCS_STATE_DATA_SOURCE_SUBSCRIBED);
+        return subscribe_characteristic(ANCS_SUBSCRIBE_NOTIFICATION_SOURCE);
+    } else {
+        ESP_LOGI(TAG, "[ANCS] notification source subscribed");
+        set_ancs_state(ANCS_STATE_NOTIFICATION_SOURCE_SUBSCRIBED);
         set_ancs_state(ANCS_STATE_READY);
     }
 
@@ -360,21 +516,25 @@ static int descriptor_discovered_cb(uint16_t conn_handle, const struct ble_gatt_
     (void)arg;
     (void)chr_val_handle;
 
+    if (!is_current_connection(conn_handle, "descriptor discovery")) {
+        return 0;
+    }
+
     if (error->status != 0) {
         if (error->status == BLE_HS_EDONE) {
             if (s_active_cccd_handle == 0) {
-                ESP_LOGE(TAG, "CCCD not found for subscribe target=%d", s_active_subscribe_target);
-                set_ancs_state(ANCS_STATE_ERROR);
-                return BLE_HS_ENOENT;
+                return recover_from_ancs_error(conn_handle, "CCCD not found", BLE_HS_ENOENT);
             }
-            return ble_gattc_write_flat(conn_handle, s_active_cccd_handle,
-                                        cccd_value, sizeof(cccd_value),
-                                        subscribe_complete_cb,
-                                        (void *)(uintptr_t)s_active_subscribe_target);
+            int rc = ble_gattc_write_flat(conn_handle, s_active_cccd_handle,
+                                          cccd_value, sizeof(cccd_value),
+                                          subscribe_complete_cb,
+                                          (void *)(uintptr_t)s_active_subscribe_target);
+            if (rc != 0) {
+                return recover_from_ancs_error(conn_handle, "CCCD write start", rc);
+            }
+            return 0;
         }
-        ESP_LOGE(TAG, "descriptor discovery failed: status=%d", error->status);
-        set_ancs_state(ANCS_STATE_ERROR);
-        return error->status;
+        return recover_from_ancs_error(conn_handle, "descriptor discovery", error->status);
     }
 
     if (ble_uuid_cmp(&dsc->uuid.u, BLE_UUID16_DECLARE(BLE_GATT_DSC_CLT_CFG_UUID16)) == 0) {
@@ -387,16 +547,30 @@ static int descriptor_discovered_cb(uint16_t conn_handle, const struct ble_gatt_
 static int start_characteristic_discovery(uint16_t conn_handle, uint16_t start_handle,
                                           uint16_t end_handle)
 {
+    if (!is_current_connection(conn_handle, "start characteristic discovery")) {
+        return 0;
+    }
     set_ancs_state(ANCS_STATE_DISCOVERING_CHARACTERISTICS);
-    return ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
-                                   characteristic_discovered_cb, NULL);
+    int rc = ble_gattc_disc_all_chrs(conn_handle, start_handle, end_handle,
+                                     characteristic_discovered_cb, NULL);
+    if (rc != 0) {
+        return recover_from_ancs_error(conn_handle, "characteristic discovery start", rc);
+    }
+    return 0;
 }
 
 static int start_ancs_service_discovery(uint16_t conn_handle)
 {
+    if (!is_current_connection(conn_handle, "start service discovery")) {
+        return 0;
+    }
     set_ancs_state(ANCS_STATE_DISCOVERING_SERVICE);
-    return ble_gattc_disc_svc_by_uuid(conn_handle, &APPLE_NC_UUID.u,
-                                      service_discovered_cb, NULL);
+    int rc = ble_gattc_disc_svc_by_uuid(conn_handle, &APPLE_NC_UUID.u,
+                                        service_discovered_cb, NULL);
+    if (rc != 0) {
+        return recover_from_ancs_error(conn_handle, "service discovery start", rc);
+    }
+    return 0;
 }
 
 static int start_notification_subscriptions(void)
@@ -406,11 +580,11 @@ static int start_notification_subscriptions(void)
         ESP_LOGE(TAG, "ANCS characteristics missing: ns=%u ds=%u cp=%u",
                  s_notification_source_handle, s_data_source_handle,
                  s_control_point_handle);
-        set_ancs_state(ANCS_STATE_ERROR);
-        return BLE_HS_ENOENT;
+        return recover_from_ancs_error(s_conn_handle, "ANCS characteristics missing",
+                                       BLE_HS_ENOENT);
     }
 
-    return subscribe_characteristic(ANCS_SUBSCRIBE_NOTIFICATION_SOURCE);
+    return subscribe_characteristic(ANCS_SUBSCRIBE_DATA_SOURCE);
 }
 
 static int characteristic_discovered_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -418,13 +592,15 @@ static int characteristic_discovered_cb(uint16_t conn_handle, const struct ble_g
 {
     (void)arg;
 
+    if (!is_current_connection(conn_handle, "characteristic discovery")) {
+        return 0;
+    }
+
     if (error->status != 0) {
         if (error->status == BLE_HS_EDONE) {
             return start_notification_subscriptions();
         }
-        ESP_LOGE(TAG, "characteristic discovery failed: status=%d", error->status);
-        set_ancs_state(ANCS_STATE_ERROR);
-        return error->status;
+        return recover_from_ancs_error(conn_handle, "characteristic discovery", error->status);
     }
 
     if ((chr->properties & BLE_GATT_CHR_PROP_NOTIFY) &&
@@ -456,20 +632,27 @@ static int service_discovered_cb(uint16_t conn_handle, const struct ble_gatt_err
 {
     (void)arg;
 
-    if (error->status != 0) {
-        if (error->status == BLE_HS_EDONE) {
-            ESP_LOGW(TAG, "ANCS service not found");
-            return 0;
-        }
-        ESP_LOGE(TAG, "service discovery failed: status=%d", error->status);
-        set_ancs_state(ANCS_STATE_ERROR);
-        return error->status;
-    }
-    if (svc == NULL) {
-        ESP_LOGW(TAG, "ANCS service not found");
+    if (!is_current_connection(conn_handle, "service discovery")) {
         return 0;
     }
 
+    if (error->status != 0) {
+        if (error->status == BLE_HS_EDONE) {
+            if (!s_ancs_service_found) {
+                ESP_LOGW(TAG, "ANCS service not found");
+                set_ancs_state(ANCS_STATE_ERROR);
+            }
+            return 0;
+        }
+        return recover_from_ancs_error(conn_handle, "service discovery", error->status);
+    }
+    if (svc == NULL) {
+        ESP_LOGW(TAG, "ANCS service missing");
+        set_ancs_state(ANCS_STATE_ERROR);
+        return 0;
+    }
+
+    s_ancs_service_found = true;
     s_service_end_handle = svc->end_handle;
     set_ancs_state(ANCS_STATE_SERVICE_DISCOVERED);
     ESP_LOGI(TAG, "[ANCS] service discovered");
@@ -521,7 +704,7 @@ static void handle_notification_source(const uint8_t *data, size_t len)
              ancs_event_action_to_string(source_event.action),
              source_event.category_id);
 
-    if (source_event.action == ANCS_EVENT_ADDED) {
+    if (source_event.action == ANCS_EVENT_ADDED || source_event.action == ANCS_EVENT_MODIFIED) {
         s_pending_source_events[s_next_pending_source_index] = source_event;
         s_next_pending_source_index =
             (s_next_pending_source_index + 1) % ANCS_PENDING_SOURCE_COUNT;
@@ -576,6 +759,10 @@ static void flush_data_source_timer_cb(void *arg)
 {
     (void)arg;
     esp_timer_stop(s_data_flush_timer);
+    if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE || s_ancs_state != ANCS_STATE_READY) {
+        s_data_source_len = 0;
+        return;
+    }
     if (s_data_source_len > 0) {
         handle_data_source_packet(s_data_source_buffer, s_data_source_len);
         memset(s_data_source_buffer, 0, s_data_source_len);
@@ -610,6 +797,10 @@ static void handle_notification_rx(const struct ble_gap_event *event)
     uint16_t packet_len = OS_MBUF_PKTLEN(event->notify_rx.om);
     uint8_t buffer[ANCS_MAX_DATA_SOURCE_LEN];
 
+    if (!is_current_connection(event->notify_rx.conn_handle, "notification rx")) {
+        return;
+    }
+
     if (packet_len > sizeof(buffer)) {
         ESP_LOGW(TAG, "notification packet too large: %u", packet_len);
         return;
@@ -636,6 +827,7 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "[BLE] connection failed: status=%d", event->connect.status);
+            submit_disconnected_led();
             reconnect_or_advertise();
             return 0;
         }
@@ -645,9 +837,12 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
         s_directed_advertising = false;
         system_status_set_ble(true, true);
         set_ancs_state(ANCS_STATE_CONNECTED);
+        show_ble_connected_led_once();
         ESP_LOGI(TAG, "[BLE] connected");
         int rc = ble_gap_security_initiate(event->connect.conn_handle);
-        if (rc != 0) {
+        if (rc == BLE_HS_EALREADY) {
+            ESP_LOGI(TAG, "security already in progress");
+        } else if (rc != 0) {
             ESP_LOGW(TAG, "security initiate failed: rc=%d", rc);
             return ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
@@ -658,6 +853,7 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
         reset_connection_state();
         system_status_set_ble(true, false);
         set_ancs_state(ANCS_STATE_DISCONNECTED);
+        submit_disconnected_led();
         reconnect_or_advertise();
         return 0;
 
@@ -669,10 +865,13 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
+        if (!is_current_connection(event->enc_change.conn_handle, "encryption change")) {
+            return 0;
+        }
         if (event->enc_change.status != 0) {
             ESP_LOGW(TAG, "encryption failed: status=%d", event->enc_change.status);
             set_ancs_state(ANCS_STATE_ERROR);
-            return 0;
+            return ble_gap_terminate(event->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
         set_ancs_state(ANCS_STATE_SECURED);
         set_ancs_state(ANCS_STATE_BONDED);
@@ -684,6 +883,9 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_MTU:
+        if (!is_current_connection(event->mtu.conn_handle, "MTU update")) {
+            return 0;
+        }
         s_mtu_size = event->mtu.value;
         ESP_LOGI(TAG, "MTU updated: %u", s_mtu_size);
         return 0;
@@ -692,7 +894,11 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
     {
         struct ble_gap_conn_desc desc;
         if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
-            ble_store_util_delete_peer(&desc.peer_id_addr);
+            ESP_LOGW(TAG, "[BLE] repeat pairing; deleting old peer bond and retrying");
+            int rc = ble_store_util_delete_peer(&desc.peer_id_addr);
+            if (rc != 0) {
+                ESP_LOGW(TAG, "delete old peer bond failed: rc=%d", rc);
+            }
         }
         return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
@@ -742,6 +948,14 @@ esp_err_t ble_ancs_manager_start(void)
         .callback = flush_data_source_timer_cb,
         .name = "ancs_flush",
     };
+    const esp_timer_create_args_t connected_led_timer_args = {
+        .callback = connected_led_timer_cb,
+        .name = "ancs_ble_led",
+    };
+    const esp_timer_create_args_t advertise_timer_args = {
+        .callback = advertise_timer_cb,
+        .name = "ancs_adv",
+    };
 
     if (s_started) {
         return ESP_OK;
@@ -767,6 +981,10 @@ esp_err_t ble_ancs_manager_start(void)
 
     ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_data_flush_timer), TAG,
                         "create ANCS flush timer failed");
+    ESP_RETURN_ON_ERROR(esp_timer_create(&connected_led_timer_args, &s_connected_led_timer), TAG,
+                        "create ANCS connected LED timer failed");
+    ESP_RETURN_ON_ERROR(esp_timer_create(&advertise_timer_args, &s_advertise_timer), TAG,
+                        "create ANCS advertise timer failed");
 
     system_status_set_ble(true, false);
     system_status_set_ancs_connected(false);

@@ -349,6 +349,16 @@ esp_err_t notification_rules_handle_removed(uint32_t notification_uid)
     return message_center_submit(&command);
 }
 
+void notification_rules_clear_active(void)
+{
+    if (s_has_active_led_notification) {
+        ESP_LOGI(TAG, "clearing active ANCS notification uid=%" PRIu32,
+                 s_active_led_notification_uid);
+    }
+    s_has_active_led_notification = false;
+    s_active_led_notification_uid = 0;
+}
+
 bool notification_rules_parse_color(const char *text, uint8_t *red, uint8_t *green, uint8_t *blue)
 {
     const char *hex = text;
