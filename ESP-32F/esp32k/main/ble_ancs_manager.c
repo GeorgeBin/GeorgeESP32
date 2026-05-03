@@ -449,6 +449,23 @@ static bool is_current_connection(uint16_t conn_handle, const char *context)
     return false;
 }
 
+static void delete_peer_bond_for_connection(uint16_t conn_handle, const char *reason)
+{
+    struct ble_gap_conn_desc desc;
+    int rc = ble_gap_conn_find(conn_handle, &desc);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "[BLE] %s; peer lookup failed: rc=%d", reason, rc);
+        return;
+    }
+
+    rc = ble_store_util_delete_peer(&desc.peer_id_addr);
+    if (rc == 0) {
+        ESP_LOGW(TAG, "[BLE] %s; deleted peer bond", reason);
+    } else {
+        ESP_LOGW(TAG, "[BLE] %s; delete peer bond failed: rc=%d", reason, rc);
+    }
+}
+
 static int recover_from_ancs_error(uint16_t conn_handle, const char *context, int status)
 {
     ESP_LOGW(TAG, "%s failed: status=%d", context, status);
@@ -869,7 +886,8 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         if (event->enc_change.status != 0) {
-            ESP_LOGW(TAG, "encryption failed: status=%d", event->enc_change.status);
+            ESP_LOGW(TAG, "encryption failed: status=%d; keeping peer bond and retrying after disconnect",
+                     event->enc_change.status);
             set_ancs_state(ANCS_STATE_ERROR);
             return ble_gap_terminate(event->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         }
@@ -891,17 +909,9 @@ static int ble_ancs_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-    {
-        struct ble_gap_conn_desc desc;
-        if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
-            ESP_LOGW(TAG, "[BLE] repeat pairing; deleting old peer bond and retrying");
-            int rc = ble_store_util_delete_peer(&desc.peer_id_addr);
-            if (rc != 0) {
-                ESP_LOGW(TAG, "delete old peer bond failed: rc=%d", rc);
-            }
-        }
+        delete_peer_bond_for_connection(event->repeat_pairing.conn_handle,
+                                        "repeat pairing; deleting old peer bond and retrying");
         return BLE_GAP_REPEAT_PAIRING_RETRY;
-    }
 
     default:
         return 0;
@@ -971,8 +981,8 @@ esp_err_t ble_ancs_manager_start(void)
     ble_hs_cfg.sync_cb = ble_ancs_on_sync;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_hs_cfg.sm_bonding = 1;
-    ble_hs_cfg.sm_our_key_dist |= BLE_SM_PAIR_KEY_DIST_ENC;
-    ble_hs_cfg.sm_their_key_dist |= BLE_SM_PAIR_KEY_DIST_ENC;
+    ble_hs_cfg.sm_our_key_dist |= BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist |= BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.sm_sc = 0;
 
     int rc = ble_svc_gap_device_name_set(ANCS_DEVICE_NAME);
